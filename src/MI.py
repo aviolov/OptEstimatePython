@@ -326,34 +326,38 @@ def MIDriver(num_samples=10, delta = 1e-1):
 #    print 'forward_delta = ', forward_delta
     
 #    proposed_alphas = linspace(-.25,.25, 3);
-    proposed_alphas = [-.25, .25];
+#    proposed_alphas = [-.25, .25];
+    proposed_alphas = [-.25];
 
 #    forward_deltas = array([1, 10, 25, 50, 100])* delta
-    forward_deltas = array([50])* delta
-#    forward_deltas = array([1, 10, 25, 50, 100, 200, 300, 400])* delta
-#    #MAIN CALL:
-#    MIs = []
-#    for forward_delta in forward_deltas:
-#        MI = calculateMI(Xs, alphas_applied, delta, beta_mean, beta_std, proposed_alphas, forward_delta)
-#        MIs.append(MI[0])
-##        print(r"%.2f & %.3f \\"%(forward_delta, MI[0]))
-#    print list(forward_deltas), MIs
-#    plotDsMs(forward_deltas, MIs)
-    start = time.clock()
+#    forward_deltas = array([50])* delta
+    forward_deltas = array([1, 10, 25, 50, 100, 200, 300, 400, 500, 750, 1000])* delta
     #MAIN CALL:
-    MIs = calculateMI(Xs, alphas_applied, delta,
-                       beta_mean, beta_std,
-                        proposed_alphas, forward_delta)
-    end = time.clock();
-    print proposed_alphas
-    print MIs;
-    print 'Total calculation in %f s'%(end-start)
+    MIs = []
+    for forward_delta in forward_deltas:
+        MI = calculateMI(Xs, alphas_applied, delta, beta_mean, beta_std, proposed_alphas, forward_delta)
+        MIs.append(MI[0])
+#        print(r"%.2f & %.3f \\"%(forward_delta, MI[0]))
+    print list(forward_deltas), MIs
+    plotDsMs(forward_deltas, MIs, proposed_alphas[0])
     
-def plotDsMs(ds, Ms):
+#    start = time.clock()
+#    #MAIN CALL:
+#    MIs = calculateMI(Xs, alphas_applied, delta,
+#                       beta_mean, beta_std,
+#                        proposed_alphas, forward_delta)
+#    end = time.clock();
+#    print proposed_alphas
+#    print MIs;
+#    print 'Total calculation in %f s'%(end-start)
+#    plotDsMs(forward_deltas, MIs)
+
+    
+def plotDsMs(ds, Ms, alpha):
     figure()
     plot(ds,Ms,
          'o', markersize = 12);
-    ylabel(r'$I(\alpha)$', fontsize = xlabel_fontsize)
+    ylabel(r'$I(\alpha = %.2f)$'%alpha, fontsize = xlabel_fontsize)
     xlabel(r'$\Delta_f$', fontsize = xlabel_fontsize)
     file_name = os.path.join(FIGS_DIR, 'forward_deltas_vs_MIs.pdf')
     print file_name
@@ -375,6 +379,11 @@ if __name__ == '__main__':
     
     MIDriver()
 #    plotDsMs([  0.1 ,  0.5,   1.  ,  2.5  , 5.  , 10.  , 25.],
-#            [0.016389533850681978, 0.055767621574534507, 0.0437351800259232, 0.27308813069223303, 0.69945869821900508, 1.3285098511908362, 2.1140491630282576])
+#            [0.016389533850681978, 0.055767621574534507, 0.0437351800259232, 0.27308813069223303, 0.69945869821900508, 1.3285098511908362, 2.1140491630282576],
+#                .0)
 
+#    plotDsMs([0.10000000000000001, 1.0, 2.5, 5.0, 10.0, 20.0, 30.0, 40.0, 50.0, 100.0],
+#                [0.044136161741798373, 0.12479671238400655, 0.30962785094592021, 0.81904789225061492, 1.2804114743087895, 1.7594312799887255, 1.861928357085193, 1.7898317684550973, 1.7676988706746253, 1.6603560984717278],
+#                0.25)
+    
     show()

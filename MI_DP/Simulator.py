@@ -11,6 +11,7 @@ from numpy.random import randn, rand, seed
 #ploting functionality:
 from pylab import plot, figure, hold, savefig, show, hist, title, xlabel, ylabel, mpl
 from matplotlib.pyplot import legend
+from Doublewell_FB_Stationary import xlabel_font_size
 
 #Utility parameters:
 RESULTS_DIR = '/home/alex/Workspaces/Python/OptEstimate/Results/Simulator/'
@@ -84,7 +85,8 @@ def simulateDoublewell(dt=1e-3, Tf=5.0,
                       
         Xs[idx+1] = x + f*dt + g*dWs[idx]  
     
-    return ts, Xs
+    return ts, Xs, Ufun, Vfun
+
 
 def DoublewellHarness(amax = 6.):
     alpha_null = lambda x: .0*x;
@@ -115,17 +117,15 @@ def DoublewellHarness(amax = 6.):
     x_min,x_max = -5,5 
     xs = linspace(x_min,x_max,100);
     
-    figure(); hold(True)
-    for col, fun in zip(['k', 'b', 'r', 'g'],
-                        [alpha_null, 
-                         alpha_bangbang,
-                          alpha_atan,
-                           alpha_paper]):
-        plot(xs, fun(xs), col+'o')
-        ylim((-amax-1, amax+1))
-    
-    Tf = 100.0
-
+#    figure(); hold(True)
+#    for col, fun in zip(['k', 'b', 'r', 'g'],
+#                        [alpha_null, 
+#                         alpha_bangbang,
+#                          alpha_atan,
+#                           alpha_paper]):
+#        plot(xs, fun(xs), col+'o')
+#        ylim((-amax-1, amax+1))
+#    Tf = 100.0    
 #    seed_key = randint(2014);
 #    
 ##    #Simulate different controls:
@@ -156,20 +156,113 @@ def DoublewellHarness(amax = 6.):
 #    ylim((-1.2, 1.2))
     
     
-    sigmas = array([.1,1.5]) #arange(.05, 1.5, .2)
-    figure(); hold(True)
-    seed_key = 2016;
-    for idx, sigma in enumerate(sigmas):
-        seed(seed_key)
-        ts, atan_Xs = simulateDoublewell(dt = 1e-2,
-                                          alphafun=alpha_atan, Tf=Tf,
+#    sigmas = array([.1, .75, 1.0, 1.5]) #arange(.05, 1.5, .2)
+#    figure(); hold(True)
+#    seed_key = 2016;
+#    for idx, sigma in enumerate(sigmas):
+#        seed(seed_key)
+#        ts, atan_Xs = simulateDoublewell(dt = 1e-2,
+#                                          alphafun=alpha_atan, Tf=Tf,
+#                                          sigma=sigma);
+#        subplot(len(sigmas), 1, 1+idx)
+#        plot(ts, atan_Xs, label='s=%.2f'%sigma)
+#        ylim((-1.5,1.5))
+#        legend()
+
+    Tf = 50.0
+    sigma = 1.;
+    dt = 1e-3;
+    
+    seed_key = 2014
+    seed(seed_key)
+    ts, bang_bang_Xs, Ufun, Vfun = simulateDoublewell(dt = dt, X_0 = .5,
+                                          alphafun=alpha_bangbang, Tf=Tf,
                                           sigma=sigma);
-        subplot(len(sigmas), 1, 1+idx)
-        plot(ts, atan_Xs, label='s=%.2f'%sigma)
-        ylim((-1.5,1.5))
-        legend()
+    seed(seed_key)                                      
+    ts, null_Xs, Ufun, Vfun = simulateDoublewell(dt = dt, X_0 = .5,
+                                          alphafun=alpha_null, Tf=Tf,
+                                          sigma=sigma);
+                                          
+    xs = linspace(-2,2,50)                                      
+#    visualize:
+    fig = figure(figsize=(17,8));
+    subplots_adjust(hspace = .3,wspace = .25,
+                    left=.1, right=1.,
+                    top = .9, bottom = .1)
+    
+#    ax.annotate( '$A=?$', xytext=(-.25, 0.),
+#                 xy=(0, 4), arrowprops=dict(arrowstyle='->',
+#                                  linewidth = 4),
+#                fontsize = xlabel_font_size)
+    ax = fig.add_subplot(221)
+    ax.annotate( '$A=?$', xytext=(1.,5.),
+                 xy=(0, 2), arrowprops=dict(arrowstyle='->',
+                                  linewidth = 2),
+                fontsize = xlabel_font_size)
+    ax = fig.add_subplot(222)
+    ax.annotate( '', xytext=(-3.35,5.25),
+                     xy=(0, 2),
+                     arrowprops=dict(arrowstyle='->',
+                                    linewidth = 2))
+    for plot_idx in [1,2]:
+        ax = fig.add_subplot(2,2,plot_idx)
+        ax.plot(xs, Vfun(xs), 'k',
+                linewidth = 3)
+        ax.set_title('Double Well Potential', fontsize=xlabel_font_size);
+        ax.set_xlabel(r'$X$', fontsize = xlabel_font_size)
+        ax.annotate ('', (0., 0.),
+                         (0., 3.8),
+                   arrowprops={'arrowstyle':'<->', 'linewidth':3})
+        ax.hlines(.0, -2,2, linestyles='dashed')
+    
+    for col, plot_idx, afunc in zip(['b', 'r'],
+                                    [3,4],
+                                    [alpha_null, alpha_bangbang]):
+        ax = fig.add_subplot(2,2,plot_idx)
+        ax.plot(xs, afunc(xs),
+                 col + '+-',
+                 linewidth = 3);
+        da = .9
+        ax.set_ylim((-amax-da, amax+da));
+        ax.set_ylabel(r'$\alpha(x)$', fontsize = xlabel_font_size)
+        ax.set_xlabel(r'$x$', fontsize = xlabel_font_size)
+        
+    
+    dv = .3
+    for plot_idx, col,\
+         Xs, dynamics_tag in zip([1,2],
+                                 ['b', 'r'],
+                                 [null_Xs, bang_bang_Xs],
+                                 ['uncontrolled', 'controlled']):
+        ax = fig.add_subplot(2,2,plot_idx); ax.hold(True);
+        subXs = Xs[::100]
+        ax.plot(subXs, Vfun(subXs)+dv, col + '.',
+                markersize = 10,
+                 label=dynamics_tag);
+        ax.legend(prop={'size':xlabel_font_size},
+                  loc = 'upper left')
+#        arrow( 0., 0., 0, 3.8, fc="k", ec="k",
+#                head_width=0.05, head_length=0.1,
+#                shape='full' )
+        
+    
+#        ax.set_ylim((-2,2))
+#        ax.set_ylabel(r'$X_t$', fontsize = xlabel_font_size)
+#        ax.set_xlabel(r'$t$', fontsize = xlabel_font_size)
+    
+#    for plot_idx, Xs in zip([5,6],
+#                               [null_Xs, bang_bang_Xs]):
+#        ax = fig.add_subplot(3,2,plot_idx)
+#        ax.plot(ts[::10], Xs[::10]);
+#        ax.set_ylim((-2,2))
+#        ax.set_ylabel(r'$X_t$', fontsize = xlabel_font_size)
+#        ax.set_xlabel(r'$t$', fontsize = xlabel_font_size)
                                           
     
+    fig_name = os.path.join(FIGS_DIR, 'doublewell_example_trajectory.pdf')
+    print 'saving to ', fig_name
+    save_ret_val = fig.savefig(fig_name, dpi=300)
+
 #The main function pattern in Python:
 if __name__ == '__main__':
     from pylab import *

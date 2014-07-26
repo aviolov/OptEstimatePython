@@ -13,8 +13,8 @@ from scipy.optimize.zeros import brentq
 from matplotlib.font_manager import FontProperties
 from matplotlib.pyplot import xlim
 
-RESULTS_DIR = '/home/alex/Workspaces/Python/OptEstimate/Results/DoublewellFBSolver/'
-FIGS_DIR    = '/home/alex/Workspaces/Latex/OptEstimate/Figs/DoublewellFBSolver'
+RESULTS_DIR = '/home/alex/Workspaces/Python/OptEstimate/Results/OUFBSolver/'
+FIGS_DIR    = '/home/alex/Workspaces/Latex/OptEstimate/Figs/OUFBSolver'
 
 import os
 for D in [FIGS_DIR, RESULTS_DIR]:
@@ -90,7 +90,7 @@ class FBSolver():
     ###################################
     ### MAIN FUNCTION CALLS:
     ###################################
-    def solve(self, As, pAs, 
+    def solve(self, tcs, pAs, 
               params,
                alphas,
                ICs = None,
@@ -98,14 +98,14 @@ class FBSolver():
         '''joint solve method, which passes the real work ot _fsolve and _bsolve'''
         #TODO: Upwind the drift term?
         start = time.clock()
-        fs = self._fsolve(As, 
+        fs = self._fsolve(tcs, 
                           params,
                            alphas,
                            ICs,
                             visualize)
         f_time = time.clock();
         
-        ps = self._bsolve(As, pAs, fs[:,:, 1:-1], 
+        ps = self._bsolve(tcs, pAs, fs[:,:, 1:-1], 
                           params, 
                           alphas[:, 1:-1], 
                             visualize)
@@ -185,21 +185,21 @@ class FBSolver():
         
         
         
-    def _fsolve(self, As, 
+    def _fsolve(self, tcs, 
                 params, 
                 alphas,
                 ICs = None,
                 visualize=False):
         #The parameters are in order: A, c, sigma
-        c, sigma = [x for x in params]
+        sigma, = [x for x in params]
         
-        num_prior_params = len(As);
+        num_prior_params = len(tcs);
         
         dx, dt = self._dx, self._dt;
         xs, ts = self._xs, self._ts;
         
         if visualize:
-            print 'As,c,sigma', As,c,sigma
+            print 'tcs,c,sigma', tcs,c,sigma
             print 'Tf = %.2f' %self.getTf()
             print 'x-,x+ %f,%f, dx = %f, dt = %f' %(self.getXbounds()[0], 
                                                     self.getXbounds()[1],
@@ -251,13 +251,12 @@ class FBSolver():
      
             #Convert mass matrix to CSR format:
         for tk in xrange(1, self._num_steps()):
-            for A_idx, A in enumerate(As):
+            for tc_idx, tc in enumerate(tcs):
                 #Rip the forward-in-time solution:
-                f_prev = fs[A_idx, tk-1,:];
+                f_prev = fs[tc_idx, tk-1,:];
                 
                 #load the drift field:
-                Us_internal_field = -(4*xs**3 - A*xs*exp(-1/2*(xs/c)**2 ) / c**2 -  \
-                                                         4*xs );
+                Us_internal_field = -xs/tc;
                 Us_prev = Us_internal_field + alphas[tk-1,:]
                 Us_next = Us_internal_field + alphas[tk,:] 
        
@@ -294,47 +293,30 @@ class FBSolver():
                 f_next = spsolve(Mx, RHS);
                 
                 #Store solutions:
-                fs[A_idx, tk, :] = f_next;
+                fs[tc_idx, tk, :] = f_next;
              #End ak loop
         #end tk loop:
         
         #Visualize:         
-        
-        def calculateStationary():
-            fs_stat = zeros((len(As),
-                             self._num_nodes()));
-            figure()
-            Alphas = cumsum(alphas[-1,:]);            
-            for A_idx, A in enumerate(As):
-                Vs = xs**4  - 2* xs**2 + A*exp(-xs**2/c**2/2.);
-                fs_stat[A_idx,:] = exp(-(Vs+Alphas) / D);
-                fs_stat[A_idx,:] /= sum(fs_stat[A_idx,:])*dx
-                subplot(len(As),2, 1+A_idx*2);
-                plot(xs, Vs);
-                subplot(len(As),2, 1+A_idx*2 + 1);
-                plot(xs,fs_stat[A_idx,:])
-            return fs_stat;
-                  
-        
         def visualize_me(fs, As): #this is a function b/c i'm too lazy to make a bookmark:
             soln_fig = figure()
             mod_steps = 20;
             num_cols = 4;
             num_rows = ceil(double(self._num_steps())/num_cols / mod_steps)
             
-            fs_stat = calculateStationary();
+#            fs_stat = calculateStationary();
             for tk in xrange(1,self._num_steps()):
                 step_idx = tk;
                 
                 if 0 == mod(step_idx,mod_steps) or 1 == tk:
-                    for A_idx, A in enumerate(As):
+                    for tc_idx, A in enumerate(As):
                         plt_idx = floor(step_idx / mod_steps) + (mod_steps != 1) 
                         ax = soln_fig.add_subplot(num_rows, num_cols, plt_idx)
-                        ax.plot(xs, fs[A_idx, tk,:], label='A=%f'%As[A_idx]);
-                        ax.plot(xs, fs_stat[A_idx,:], '--') 
+                        ax.plot(xs, fs[tc_idx, tk,:], label='A=%f'%As[tc_idx]);
+#                        ax.plot(xs, fs_stat[tc_idx,:], '--') 
                         if 1 == tk:
                             ax.hold(True)
-                            ax.plot(xs, fs[A_idx,tk-1,:], 'r', label='ICs')
+                            ax.plot(xs, fs[tc_idx,tk-1,:], 'r', label='ICs')
             #                        ax.legend(loc='upper left')
             #                        ax.set_title('k = %d'%tk); 
             #                        if False : #(self._num_steps()-1 != tk):
@@ -348,15 +330,15 @@ class FBSolver():
             soln_fig.canvas.manager.window.showMaximized()
         
         if visualize:
-            visualize_me(fs, As)
+            visualize_me(fs, tcs)
                 
         return fs
     
-    def _bsolve(self, As, pAs, fs,
+    def _bsolve(self, tcs, pAs, fs,
                  params, 
                  alphas,
                   visualize=False):
-        c, sigma = [x for x in params]
+        sigma, = [x for x in params]
        
         dx, dt = self._dx, self._dt;
         xs, ts = self._xs, self._ts;
@@ -365,10 +347,10 @@ class FBSolver():
             print 'x-,+', xs[[0,-1]]
             print 'Tf = %.2f' %self.getTf()
             print 'pAs', pAs
-            print 'As', As
+            print 'tcs', tcs
         
         #Allocate memory for solution:
-        ps = zeros((len(As),
+        ps = zeros((len(tcs),
                     self._num_steps(),
                     self._num_nodes()   ));
         
@@ -400,19 +382,18 @@ class FBSolver():
         M.setdiag(centre_diag)
         
         for tk in xrange(self._num_steps()-2,-1, -1):
-            for A_idx, A in enumerate(As):
+            for tc_idx, tc in enumerate(tcs):
             #Rip the forward-in-time solution:
-                p_forward = ps[A_idx, tk+1,:];
+                p_forward = ps[tc_idx, tk+1,:];
                 di_x_p_forward = (p_forward[2:] - p_forward[:-2]) / (2*dx)
                 di2_x_p_forward = (p_forward[2:] - 2*p_forward[1:-1] + p_forward[:-2]) / (dx_sqrd)
                                
                 #Calculate the velocity field
-                Us_internal_field = -(4*xs**3 - A*xs*exp(-1/2*(xs/c)**2 ) / c**2 -  \
-                                                         4*xs )[1:-1];
+                Us_internal_field = -(xs/tc)[1:-1];
                 Us_forward = Us_internal_field + alphas[tk-1,:]
                 Us_current = Us_internal_field + alphas[tk,:] 
                 
-                source_term = adjoint_source[A_idx, tk,:];
+                source_term = adjoint_source[tc_idx, tk,:];
                              
                 #Form the RHS:
                 L_forward  =  D * di2_x_p_forward + \
@@ -448,12 +429,12 @@ class FBSolver():
                 p_current = spsolve(Mx, RHS);
                 
                 #Store solutions:
-                ps[A_idx, tk,:] = p_current;
+                ps[tc_idx, tk,:] = p_current;
             #A loop
         #t loop
                      
         #Return:
-        def visualize_me(ps, As, adjoint_source):
+        def visualize_me(ps, tcs, adjoint_source):
             soln_fig = figure()
             rewards_fig = figure();
 
@@ -467,17 +448,17 @@ class FBSolver():
                 if 0 == mod(step_idx,mod_steps) or 0 == tk or self._num_steps() - 2 == tk:
                     plt_idx = 1 + floor(step_idx / mod_steps) + int(0 == tk)
                     #param plots:
-                    for A_idx, A in enumerate(As):
+                    for tc_idx, A in enumerate(tcs):
                         ax = soln_fig.add_subplot(num_rows, num_cols, plt_idx)
-                        ax.plot(xs, ps[A_idx,tk,:]);
+                        ax.plot(xs, ps[tc_idx,tk,:]);
                         if self._num_steps() - 2 == tk:
                             ax.hold(True)
-                            ax.plot(xs,ps[A_idx, tk+1,:], 'k+', label='TCs')
+                            ax.plot(xs,ps[tc_idx, tk+1,:], 'k+', label='TCs')
                         ax.set_title('tk=%d'%tk)
                         ax.set_ylabel('$p(x)$')
                         
                         ax = rewards_fig.add_subplot(num_rows, num_cols, plt_idx)
-                        ax.plot(xs[1:-1], adjoint_source [A_idx, tk,:])
+                        ax.plot(xs[1:-1], adjoint_source [tc_idx, tk,:])
                         ax.set_title('tk=%d'%tk)
                         ax.set_ylabel(r'$r(x | \theta)$')
             
@@ -485,7 +466,7 @@ class FBSolver():
                 fig.canvas.manager.window.showMaximized()
        
         if visualize:
-            visualize_me(ps, As, adjoint_source)    
+            visualize_me(ps, tcs, adjoint_source)    
         return ps
     
     def _vsolve(self, As, pAs, fs,
@@ -704,9 +685,8 @@ class FBSolution():
         self._alphas = alphas;
         self._grad_J = grad_J;
         self._J = J;
-                
-        self._c = params[0]
-        self._sigma = params[1]
+        
+        self._sigma = params[0]
         
         self._As = As;
         self._pAs= pAs;
@@ -764,61 +744,48 @@ class FBIterates():
         load_file = open(file_name, 'r')
         solns = cPickle.load(load_file)
         return solns
-########################
-#def FBDriver(params,
-#              Tf,
-#              energy_eps = .001,
-#              alpha_bounds = (-2., 2.),
-#              initial_ts_cs = None,
-#              save_soln = False):
-#     
-#    xs, ts, fs, ps,\
-#     cs_iterates, J_iterates = calculateOptimalControl(params,
-#                                                        Tf,
-#                                                        energy_eps,
-#                                                        alpha_bounds,
-#                                                        step_size_base = 1.,
-#                                                        initial_ts_cs=initial_ts_cs,
-#                                                        visualize=True)
-#
-#    (FBKSolution(params, xs, ts, fs, ps,
-#                  cs_iterates, J_iterates,
-#                   energy_eps)).save()
- 
 
-def DoublewellIllustrator():
+
+################################################## 
+################################################## 
+################################################## 
+
+def OUIllustrator():
     #Illustrates the Potential Well, the potential gradient
     Tf= 10;
     
-    amax = 10;
-    A = 4.;
+    amax = 1;
+    tc = 20.;
     c = .3;
     
-    x_min,x_max = -5,5 
+    m = .0;
     
-    xs = linspace(x_min,x_max,101);
+    x_min,x_max = -10,10 
     
-    Vs = xs**4 - 2*xs**2 + A*exp(-(xs/c)**2 / 2)  
-    Us = - (4*xs**3 - A*xs*exp(-1/2*(xs/c)**2) / c**2 - 4*xs )
+    xs = linspace(x_min,x_max,1001);
+    
+    Vs = (xs**2 - m*xs) / tc   
+    Us = -(xs - m)
     alphas = -amax*sign(xs)
     Us_tilted = Us +alphas
+    Vs_tilted = Vs + alphas*xs
     
-    for idx, ys in enumerate([Vs, Us, Us_tilted]):
-        subplot(3,1,1+idx)
+    for idx, ys in enumerate([Vs, Us, Us_tilted, Vs_tilted]):
+        subplot(4,1,1+idx)
         plot(xs, ys)
-        if idx == 0:
-            xlim((-2,2))
-            ylim((-1,8))
-        if idx == 1:
-            xlim((-2,2))
-            ylim((-12,12))
-            hlines(0, -2,2)
-        if idx == 2:
-            xlim((-2,2))
-            ylim((-12,12))
-            hlines(0, -2,2)
+#        if idx == 0:
+##            xlim((-2,2))
+#            ylim((-1,8))
+#        if idx == 1:
+##            xlim((-2,2))
+#            ylim((-12,12))
+#            hlines(0, -2,2)
+#        if idx == 2:
+##            xlim((-2,2))
+#            ylim((-12,12))
+#            hlines(0, -2,2)
         
-    file_name = os.path.join(FIGS_DIR, 'double_well_potential.pdf')
+    file_name = os.path.join(FIGS_DIR, 'illustrate_potential.pdf')
     print 'saving to ', file_name
     savefig(file_name)
 
@@ -858,32 +825,27 @@ def SolverHarness():
 #                   energy_eps)).save()
 
 
-def compareBasicAlphas(resimulate=True):
-    A = 3.8;
-    c = 0.3;
+def compareBasicAlphas(resimulate=True, Tf = 2.,
+                       tcs = [.5,2]):
     sigma = 1.;
-    params = array([c, sigma]);
-    Tf   = 5.
-    amax = 6  
+    params = array([sigma]);
+    amax = 1.0
     alpha_bounds = [-amax, amax];  
-    dt = .01; num_nodes = 100;
+    dt = .01; num_nodes = 200;
     
     lSolver = FBSolver(dt, Tf, num_nodes, xmin=-2., xmax=2.)
+        
+    pAs = ones_like(tcs) / len(tcs);
     
-    As = linspace(2,5, 2)#4
-    pAs = ones_like(As) / len(As);
-    
-    alpha_bang_bang = lambda x: -amax* sign(x)
-
-    alpha_atan = lambda x: -arctan(100*x) / (pi/ 2.) * amax
+    alpha_bang_bang = lambda x: amax* sign(x)
     alpha_null = lambda x: .0*x
-    alpha_antiatan = lambda x: arctan(5*x) / (pi/ 2.) * amax
+    alpha_antibang = lambda x: -sign(x)* amax
     
 #    alpha_tags = ['bang_bang', 'atan_bang_bang',  'null', 'atan_bang_bang']
 #    alpha_funcs = [alpha_bang_bang, alpha_atan, alpha_null, alpha_antiatan]
     
-    alpha_tags = ['bang_bang', 'atan_bang_bang', 'alpha_null']
-    alpha_funcs = [alpha_bang_bang, alpha_atan, alpha_null]        
+    alpha_tags = ['bang_bang', 'anti_bang', 'alpha_null']
+    alpha_funcs = [alpha_bang_bang, alpha_antibang, alpha_null]        
     alpha_fig = figure()
     for alpha_func, alpha_tag in zip(alpha_funcs,
                                       alpha_tags): 
@@ -891,14 +853,14 @@ def compareBasicAlphas(resimulate=True):
         if resimulate:
             alphas = lSolver.generateAlphaField(alpha_func);
             xs = lSolver._xs;
-            width = 10.0; x_0 = .0;
+            width = 1.0; x_0 = 1.0;
             pre_ICs = exp(-(xs-x_0)**2 / width**2) / (width * sqrt(pi))
             ICs = pre_ICs / (sum(pre_ICs)*lSolver._dx) 
-            xs, ts, fs, ps, J, grad_J = lSolver.solve(As, pAs,
+            xs, ts, fs, ps, J, grad_J = lSolver.solve(tcs, pAs,
                                            params, alphas, 
                                            ICs,
                                            visualize=False)
-            (FBSolution(params, As, pAs, xs, ts,
+            (FBSolution(params, tcs, pAs, xs, ts,
                          fs, ps, alphas, grad_J, J)).save(fb_file_name)
 
         fbSoln = FBSolution.load(fb_file_name)
@@ -911,15 +873,14 @@ def compareBasicAlphas(resimulate=True):
         print alpha_tag + 'J=%.3f'%lSolver._calcObjective(fbSoln._fs, fbSoln._pAs)
        
 
-def compareBangBang_vs_GradOptimal_Alphas():
-    A = 3.8;
-    c = 0.3;
+def compareBangBang_vs_GradOptimal_Alphas(Tf = 2.):
     sigma = 1.;
-    params = array([c, sigma]);
-    Tf   = 5.
+    params = array([sigma]);
+    
     amax = 6 #6 #10
     alpha_bounds = [-amax, amax];  
     dt = .01; num_nodes = 100;
+    
     
     lSolver = FBSolver(dt, Tf, num_nodes, xmin=-2., xmax=2.)
     
@@ -937,29 +898,9 @@ def compareBangBang_vs_GradOptimal_Alphas():
     opt_file_name = 'alpha_iterates_uICs_Tf=%.1f'%Tf  
     FBSolnsList = (FBIterates.load(opt_file_name))._iteratesList
     FBOptSoln = FBSolnsList[-1]
-#    print 'J_14 = ', FBSolnsList[14]._J
+    mid_k = int(ceil(len(FBSolnsList) / 2));
+    print 'J_mid(%d) = '%mid_k, FBSolnsList[mid_k]._J
     print 'J_opt=', FBOptSoln._J;
-    
-     #J figure:
-    Js = [fb._J for fb in FBSolnsList];
-    
-    J_fig = figure(figsize = (17,6));
-    J_fig.subplots_adjust(left=.025, right=1.,
-                     top = .95, bottom = .05)
-    ax = J_fig.add_subplot(111);
-    ax.plot(Js, 'b', label='Gradient Ascent');
-    ax.set_ylabel(r'$J_{k}$', fontsize = xlabel_font_size);
-    ax.set_xlabel('k', fontsize = xlabel_font_size)
-    ax.set_title('$J$ evolution', fontsize = xlabel_font_size);
-    ax.plot(fbBangSoln._J*ones_like(Js), 'r', label='Bang-Bang')    
-    ax.set_ylim([0., ceil(fbBangSoln._J)]);
-    ax.legend(loc = 'lower right', prop={'size':label_font_size})
-#    ax.legend('lower right')
-    #Save figs:     
-    fig_name ='FB_J_iterates_uICs'
-    fig_name = os.path.join(FIGS_DIR, fig_name + '.pdf')
-    print 'saving to ', fig_name
-    save_ret_val = J_fig.savefig(fig_name, dpi=300)
     
          
 
@@ -1014,16 +955,16 @@ def visualizeAlpha(resimulate, alpha_func, alpha_tag, Tf=5., amax = 6.):
     num_cols = 3;
     for row_idx, tk in enumerate(tks):
         plt_idx = row_idx*3
-        for A_idx, A in enumerate(As):
+        for tc_idx, A in enumerate(As):
             #fs: 
             ax = soln_fig.add_subplot(num_rows, num_cols, plt_idx+1)
-            ax.plot(xs, fs[A_idx, tk,:], label='A=%.1f'%As[A_idx]); 
+            ax.plot(xs, fs[tc_idx, tk,:], label='A=%.1f'%As[tc_idx]); 
             ax.set_ylabel('$f$', fontsize = xlabel_font_size)
             ax.legend(prop={'size':label_font_size})
             ax.set_ylim((.0, 2.0))
             #ps:
             ax = soln_fig.add_subplot(num_rows, num_cols, plt_idx+2)
-            ax.plot(xs, ps[A_idx, tk,:], label='A=%.1f'%As[A_idx]); 
+            ax.plot(xs, ps[tc_idx, tk,:], label='A=%.1f'%As[tc_idx]); 
             ax.set_ylabel('$p$', fontsize = xlabel_font_size)
             ax.legend(prop={'size':label_font_size})
 #            ax.set_ylim((-.05, 3.0))
@@ -1112,16 +1053,16 @@ def computeAlphaSingleIncrement(resimulate = True):
     num_cols = 3;
     for row_idx, tk in enumerate(tks):
         plt_idx = row_idx*3
-        for A_idx, A in enumerate(As):
+        for tc_idx, A in enumerate(As):
             #fs: 
             ax = soln_fig.add_subplot(num_rows, num_cols, plt_idx+1)
-            ax.plot(xs, fs[A_idx, tk,:], label='A=%.1f'%As[A_idx]); 
+            ax.plot(xs, fs[tc_idx, tk,:], label='A=%.1f'%As[tc_idx]); 
             ax.set_ylabel('$f$', fontsize = xlabel_font_size)
             ax.legend(prop={'size':label_font_size})
             ax.set_ylim((.0, 2.0))
             #ps:
             ax = soln_fig.add_subplot(num_rows, num_cols, plt_idx+2)
-            ax.plot(xs, ps[A_idx, tk,:], label='A=%.1f'%As[A_idx]); 
+            ax.plot(xs, ps[tc_idx, tk,:], label='A=%.1f'%As[tc_idx]); 
             ax.set_ylabel('$p$', fontsize = xlabel_font_size)
             ax.legend(loc = 'lower right',
                       prop={'size':label_font_size})
@@ -1214,17 +1155,17 @@ def IncrementAlphaHarness(recalculate = False,
             ts = FBSoln._ts;
             fs, ps, alphas = FBSoln._fs, FBSoln._ps,FBSoln._alphas;
             
-            A_idx = 0;
+            tc_idx = 0;
             
             #fs: 
             ax = soln_fig.add_subplot(num_rows, num_cols, plt_idx+1)
-            ax.plot(xs, fs[A_idx, tk,:], label='k=%d'%ak); 
-            ax.set_ylabel(r'$f_{A=%.1f}$'%As[A_idx], fontsize = xlabel_font_size)
+            ax.plot(xs, fs[tc_idx, tk,:], label='k=%d'%ak); 
+            ax.set_ylabel(r'$f_{A=%.1f}$'%As[tc_idx], fontsize = xlabel_font_size)
             ax.set_ylim((.0, 2.0))
             #ps: 
             ax = soln_fig.add_subplot(num_rows, num_cols, plt_idx+2)
-            ax.plot(xs, ps[A_idx, tk,:], label='k=%d'%ak); 
-            ax.set_ylabel(r'$p_{A=%.1f}$'%As[A_idx], fontsize = xlabel_font_size)
+            ax.plot(xs, ps[tc_idx, tk,:], label='k=%d'%ak); 
+            ax.set_ylabel(r'$p_{A=%.1f}$'%As[tc_idx], fontsize = xlabel_font_size)
             ax.set_ylim((.0, 2.0))
             
             
@@ -1271,59 +1212,75 @@ def IncrementAlphaHarness(recalculate = False,
 
 def IncrementAlphaHarness_ICs(recalculate = False,
                           num_iterates = 20,
-                          Tf   = 1.):
-    A = 3.8;
-    c = 0.3;
+                          Tf   = 1.,
+                          tcs = [.5,2] ):
+    
     sigma = 1.;
-    params = array([c, sigma]);
-    amax = 10 #10
+    params = array([sigma]);
+    amax = 1
     alpha_bounds = [-amax, amax];  
-    alpha_forward = lambda x: -arctan(5*x) / (pi/ 2.) * amax
+    alpha_bang_bang = lambda x: amax* sign(x)
+    alpha_forward = lambda x: arctan(5*x) / (pi/ 2.) * amax
     alpha_null = lambda x: .0*x
-    dt = .01; num_nodes = 100;
+    dt = .01; num_nodes = 500;
     
-    lSolver = FBSolver(dt, Tf, num_nodes, xmin=-2., xmax=2.)
+    lSolver = FBSolver(dt, Tf, num_nodes, xmin=-5., xmax=5.)
     
-    As = linspace(2,5, 2)#4
-    pAs = ones_like(As) / len(As);
-    
+    pAs = ones_like(tcs) / len(tcs);
     
     file_name = 'alpha_iterates_uICs_Tf=%.1f'%Tf 
     if recalculate:
-        alphas = lSolver.generateAlphaField(alpha_null);
-        
-        step_size = 40.
+                
+        step_size = 10.
         FBSolnsList = []
         xs = lSolver._xs;
-        width = 10.0; x_0 = .0;
+        width = 2.0; x_0 = .0;
         pre_ICs = exp(-(xs-x_0)**2 / width**2) / (width * sqrt(pi))
         ICs = pre_ICs / (sum(pre_ICs)*lSolver._dx) 
+        
+        #Calculate bang-bang reference:
+        alphas = lSolver.generateAlphaField(alpha_bang_bang);
+        xs, ts, fs, ps, J, grad_J = lSolver.solve(tcs, pAs,
+                                           params, alphas, 
+                                           ICs,
+                                           visualize=False)
+        (FBSolution(params, tcs, pAs, xs, ts,
+                     fs, ps, alphas, grad_J, J)).save('alpha_bang_bang')
+
+        alphas = lSolver.generateAlphaField(alpha_null);
 
         for ak in xrange(num_iterates):
-            xs, ts, fs, ps, J, grad_J = lSolver.solve(As, pAs,
+            xs, ts, fs, ps, J, grad_J = lSolver.solve(tcs, pAs,
                                                   params, alphas, 
                                                   ICs,
                                                   visualize=False)
             print ak, J
-            fbSoln = FBSolution(params, As, pAs, xs, ts, fs, ps, alphas, grad_J, J)
+            fbSoln = FBSolution(params, tcs, pAs,
+                                 xs, ts, fs, ps,
+                                  alphas, grad_J, J)
             FBSolnsList.append(fbSoln)
             
             #calculate next alpha field:
-            alphas = incrementAlpha(alphas, grad_J,step_size=step_size)
+            alphas = incrementAlpha(alphas, grad_J,
+                                    step_size=step_size,
+                                    alpha_max=amax)
         
         FBIterates(FBSolnsList).save(file_name)
-    #load: 
+        #//Resimulate
+    
+    #Load: 
     FBSolnsList = (FBIterates.load(file_name))._iteratesList
     num_iterates = len(FBSolnsList);
     
     #Visualize controls:
 #    tks = [1, 25, 50, 100,399, 474, 498]
-    tks = [50, 100, 399, 474]
-#    tks = [1, 250]
+#    tks = [1, 50, 100, 150, 199]
+#    tks = [1, 20, 40,60,80, 99]
+    tks = array([1, 3, 10, 40, 60, 90, 97, 99])*int(Tf)
+
 #    aks = [5, 10, 14, 16, 18, len(FBSolnsList)-1];
-    tks = [1, 20, 480, 498]
-    aks = [0, int((num_iterates - 1)/2), num_iterates - 1];
 #    aks = [16, num_iterates - 1];
+    aks = [0, int((num_iterates - 1)/2), num_iterates - 1];
 
 #    soln_fig = figure(figsize = (17,21));
     soln_fig = figure(figsize = (17,18));
@@ -1340,18 +1297,18 @@ def IncrementAlphaHarness_ICs(recalculate = False,
             ts = FBSoln._ts;
             fs, ps, alphas = FBSoln._fs, FBSoln._ps,FBSoln._alphas;
             
+            tc_idx = 0;
             
-            A_idx = 1;
             #fs: 
             ax = soln_fig.add_subplot(num_rows, num_cols, plt_idx+1)
-            ax.plot(xs, fs[A_idx, tk,:], label='k=%d'%ak); 
-            ax.set_ylabel(r'$f_{A=%.1f}$'%As[A_idx], fontsize = xlabel_font_size)
-            ax.set_ylim((-0.0, 2.0))
+            ax.plot(xs, fs[tc_idx, tk,:], label='k=%d'%ak); 
+            ax.set_ylabel(r'$f_{A=%.1f}$'%tcs[tc_idx], fontsize = xlabel_font_size)
+#            ax.set_ylim((.0, 2.0))
             #ps: 
             ax = soln_fig.add_subplot(num_rows, num_cols, plt_idx+2)
-            ax.plot(xs, ps[A_idx, tk,:], label='k=%d'%ak); 
-            ax.set_ylabel(r'$p_{A=%.1f}$'%As[A_idx], fontsize = xlabel_font_size)
-#            ax.set_ylim((-20.0, 20.0))
+            ax.plot(xs, ps[tc_idx, tk,:], label='k=%d'%ak); 
+            ax.set_ylabel(r'$p_{A=%.1f}$'%tcs[tc_idx], fontsize = xlabel_font_size)
+#            ax.set_ylim((.0, 2.0))
             
             
             #alphas:
@@ -1363,8 +1320,8 @@ def IncrementAlphaHarness_ICs(recalculate = False,
         for col_idx in xrange(1,num_cols+1):
             ax = soln_fig.add_subplot(num_rows, num_cols, plt_idx+col_idx)
             ax.set_title('t=%.2f'%ts[tk], fontsize = xlabel_font_size)
-            ax.vlines(0,ax.get_ylim()[0], ax.get_ylim()[1],linestyles='dashed')
-            ax.hlines(0,ax.get_xlim()[0], ax.get_xlim()[1],linestyles='dashed')
+#            ax.vlines(0,ax.get_ylim()[0], ax.get_ylim()[1],linestyles='dashed')
+#            ax.hlines(0,ax.get_xlim()[0], ax.get_xlim()[1],linestyles='dashed')
             ax.set_xlim(xs[0], xs[-1])
             if tk == tks[0]:
                 ax.legend(prop={'size':label_font_size})
@@ -1375,12 +1332,22 @@ def IncrementAlphaHarness_ICs(recalculate = False,
                     x.set_visible(False)
     #J figure:
     Js = [fb._J for fb in FBSolnsList];
+    fbBangSoln = FBSolution.load('alpha_bang_bang')
+    J_bangbang = fbBangSoln._J;
     
-    J_fig = figure(figsize = (17,4));
+    J_fig = figure(figsize = (17,6));
     subplots_adjust(left=.025, right=1.,
                      top = .95, bottom = .05)
     ax = J_fig.add_subplot(111);
-    ax.plot(Js);
+    J_fig.subplots_adjust(left=.025, right=1.,
+                     top = .95, bottom = .05)
+    ax = J_fig.add_subplot(111);
+    ax.plot(Js, 'b', label='Gradient Ascent');
+    ax.plot(J_bangbang*ones_like(Js), 'r', label='Bang-Bang')    
+    ax.set_ylim([0., ceil(J_bangbang) ]);
+    ax.legend(loc = 'lower right', prop={'size':label_font_size})
+#   
+    
     ax.set_ylabel(r'$J_{k}$', fontsize = xlabel_font_size);
     ax.set_xlabel('k', fontsize = xlabel_font_size)
     ax.set_title('$J$ evolution', fontsize = xlabel_font_size);
@@ -1390,26 +1357,30 @@ def IncrementAlphaHarness_ICs(recalculate = False,
                              ['FB_alpha_iterates_uICs_%d'%len(tks),
                               'FB_J_iterates_uICs']):       
 #        fig.canvas.manager.window.showMaximized()
-        lfig_name = os.path.join(FIGS_DIR, fig_name + '.pdf')
+        lfig_name = os.path.join(FIGS_DIR, fig_name + '_ControlSimulator.pyTf=%d.pdf'%(ceil(Tf)))
         print 'saving to ', lfig_name
         save_ret_val = fig.savefig(lfig_name, dpi=300)
 
+
 if __name__ == '__main__':
     from pylab import *
-#    DoublewellIllustrator()
+    
+    
+    
+#    OUIllustrator()
 #    SolverHarness()
 #    visualizeAlphaHarness()
 #    compareBasicAlphas(resimulate=True);
     
 #    computeAlphaSingleIncrement(resimulate=False)
-#    IncrementAlphaHarness(recalculate=False, num_iterates=25,
+#   IncrementAlphaHarness(recalculate=False, num_iterates=25,
 #                          Tf = 5.)
     
-#    IncrementAlphaHarness_ICs(recalculate=False,
-#                              num_iterates=80,
-#                              Tf = 5.)
+    IncrementAlphaHarness_ICs(recalculate=False,
+                              num_iterates=50,
+                              Tf = 8.) #Tf= 2,4,8
 
-    compareBangBang_vs_GradOptimal_Alphas()
+#    compareBangBang_vs_GradOptimal_Alphas(Tf = 2.)
     
     
     show()

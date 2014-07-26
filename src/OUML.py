@@ -365,8 +365,8 @@ if __name__ == '__main__':
     alpha = 10. / tau;
     num_samples = 10;
     #Generate the paths     
-    generateData(alpha       = alpha,
-                 num_samples = num_samples)
+#    generateData(alpha       = alpha,
+#                 num_samples = num_samples)
     
     #Estimate params:
 #    start = time.clock();

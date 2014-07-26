@@ -253,7 +253,7 @@ def analyzePerterbuedEstimates():
 if __name__ == '__main__':
     from pylab import *
     
-    appendData()
+#    appendData()
 #    visualizeForwardSims()
 #    estimatePerturbedBatch()
 #    analyzePerterbuedEstimates()
