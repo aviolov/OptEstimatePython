@@ -23,7 +23,7 @@ import time
 ABCD_LABEL_SIZE = 32 
 #import ext_fpc
 
-from hd5Driver import hd5Solution
+#from hd5Driver import hd5Solution
 
 class ForwardSolver():
     def __init__(self, params, 
@@ -136,7 +136,7 @@ class ForwardSolver():
             alpha_prev = alphas[tk-1]
             alpha_next = alphas[tk]
 
-            for theta_idx , theta in enumerate(thetas):
+            for theta_idx, theta in enumerate(thetas):
                 #Rip the previous time solution:
                 F_prev = Fs[theta_idx, tk - 1, :];
                 if max(abs(F_prev)) < 1e-5:

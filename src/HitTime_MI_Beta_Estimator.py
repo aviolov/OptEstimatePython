@@ -8,14 +8,18 @@ from numpy import *
 from numpy.random import randn, seed  
 from copy import deepcopy
 
-from scipy.interpolate.interpolate import interp2d
+from scipy.interpolate.interpolate import interp2d, interp1d
 from scipy.interpolate.fitpack2 import RectBivariateSpline
 from matplotlib.patches import FancyArrowPatch, FancyArrow, ArrowStyle
 from matplotlib.font_manager import FontProperties
 from OUML import get_ts_dWs
 
-RESULTS_DIR = '/home/alex/Workspaces/Python/OptEstimate/Results/OU_MIControlSimulator/'
-FIGS_DIR    = '/home/alex/Workspaces/Latex/OptEstimate/Figs/OU_MIControlSimulator'
+from ForwardSolver import ForwardSolver, ForwardSolution
+from ControlBasisBox import piecewiseConst
+from scipy.optimize.optimize import fminbound
+
+RESULTS_DIR = '/home/alex/Workspaces/Python/OptEstimate/Results/HitTime_MI_BetaEstimate/'
+FIGS_DIR    = '/home/alex/Workspaces/Latex/OptEstimate/Figs/HitTime_MI_BetaEstimate'
 
 import os
 for D in [FIGS_DIR, RESULTS_DIR]:
@@ -26,7 +30,7 @@ import time
 label_font_size = 32
 xlabel_font_size = 40
 
-from OU_FBSolver import FBSolution
+ 
 from collections import deque
 
 #PARAMETERS:
@@ -46,48 +50,46 @@ class SimulationParams():
        
 class SimulationPaths():
     FILE_EXTENSION = '.sp'
-    def __init__(self, ts, xs_block, cs_block, simParams, control_tag):
-        self.ts = ts;
-        if shape(xs_block)[1] != shape(cs_block)[1]:
-            raise RuntimeError('xsBlock, csBLock mismatched sizes')
-        self.xs = xs_block;
-        self.cs = cs_block;
+    def __init__(self, thits_blocks, simParams, alphas, alpha_tags, betaEsts = []):
+        self.thits_blocks = thits_blocks;
+ 
+        self.alphas = alphas;
+        self.alpha_tags = alpha_tags;
+        
         self.simParams = simParams;
-        self.control_tag = control_tag;
+        self.betaEsts = [];   
         
-    def getT(self):
-        return self.ts[-1];
-    def getN(self):
-        return shape(self.xs)[1]
-        
-        
+       
     def save(self, file_name=None):
 #       path_data = {'path' : self}
         if None == file_name:
             P = self.simParams;
-            file_name = self.getDefaultFileName(self.getT(),
-                                           self.getN(),
-                                           P.mu,
-                                           P.tau_char,
-                                           P.sigma,
-                                           self.control_tag);
+            Nb = self.thits_blocks.shape[1]
+            Nh = self.thits_blocks.shape[2]
+            
+            file_name = self.getDefaultFileName(Nb,
+                                                Nh,
+                                                P.mu,
+                                                P.tau_char,
+                                                P.sigma );
                                                                    
-        print 'saving path to ', file_name
+        print 'saving hitting times to ', file_name
         file_name = os.path.join(RESULTS_DIR, file_name + self.FILE_EXTENSION)
         import cPickle
         dump_file = open(file_name, 'wb')
         cPickle.dump(self, dump_file, 1) # 1: bin storage
         dump_file.close()
+        
     @classmethod
-    def getDefaultFileName(cls, T,N,m,tc, sigma, ctag):
-        return 'OUSim_%s_T=%.2f_N=%d_m=%.2f_tc=%.2f_s=%.2f'%(ctag, T,N,m,tc, sigma);
+    def getDefaultFileName(cls, Nb, Nh, m,tc, sigma, ctag=''):
+        return 'HTSim_%s_Nb=%d_Nh=%d_m=%.2f_tc=%.2f_s=%.2f'%(ctag, Nb, Nh, m,tc, sigma);
     
     @classmethod
-    def load(cls, TNmtcs_ctag=None,file_name=None ):
+    def load(cls, NbNhmtcs_ctag=None,file_name=None ):
         ''' not both args can be None!!!'''
         if None == file_name:
-            T,N,m,tc, sigma, ctag = [x for x in TNmtcs_ctag]
-            file_name = cls.getDefaultFileName(T, N, m, tc, sigma,ctag);
+            Nb, Nh, m,tc, sigma, ctag = [x for x in NbNhmtcs_ctag]
+            file_name = cls.getDefaultFileName(Nb, Nh, m,tc, sigma, ctag);
 
         file_name = os.path.join(RESULTS_DIR, file_name +  cls.FILE_EXTENSION) 
         print 'loading ', file_name
@@ -199,89 +201,51 @@ def visualizeControls(amax = 1, Tf = 16., xmax = 2.,
         savefig(lfig_name)
    
      
-def visualizePaths(Tf, Npaths = 10, N_paths_to_visualize=6,
-                    simParams = SimulationParams(), fig_name=None):
+def visualizePaths(Nblocks , 
+                     Nhits ,
+                     simPs ,
+                  fig_name=None):
     
     #Load:
-    simPathsList = [];
-    ctags =  ['det', 'feedback', 'placebo']
-    for rdx, c_tag, in enumerate( ctags ):
-        
-        TNMtcs_tag = [Tf, Npaths,
-                       simParams.mu, simParams.tau_char, simParams.sigma,
-                        c_tag]
-        
-        simPathsList.append(  SimulationPaths.load(TNMtcs_tag) );
-        
+    simPaths = SimulationPaths.load([Nblocks, Nhits, simPs.mu, simPs.tau_char, simPs.sigma, ''])
     
-        
-    figure( figsize = (17, 10 ));    
+    thits_Blocks = simPaths.thits_blocks;
+    alphas = simPaths.alphas;
     
-    N_paths_to_visualize = min(N_paths_to_visualize, Npaths)
+    Nbins = floor(Nhits / 5);
+
+    '''VISUALIZE'''   
+    figure( figsize = (17, 10) ); 
     
-    alpha_bounds = [amin(simPathsList[0].cs), amax(simPathsList[0].cs)];
-    x_bounds = [ceil(amin(simPathsList[1].xs)), floor(amax(simPathsList[1].xs))];
-    
-    for tdx in xrange(N_paths_to_visualize):
+    for pdx in xrange(0,len(alphas) ):
+        thits = thits_Blocks[pdx, 0, :];
         
         
-        for simPaths, c_tag in zip( simPathsList,
-                                    ctags):
-    
-            ts = simPaths.ts;
-            xs = simPaths.xs[:, tdx];
-            cs = simPaths.cs[:, tdx];
+        subplot(len(alphas),1,pdx+1)
+        hist(thits, normed=True, bins = Nbins);
+        title(r'$\alpha=%.2f$'%alphas[pdx], fontsize = 36);
         
-            pdx = 1 + 2*tdx
-            ax = subplot(N_paths_to_visualize, 2, pdx); hold(True);
-            plot(ts, xs);
-           
-            ax.set_yticks((x_bounds[0], .0, x_bounds[1]))
-            if tdx == 0:
-                title('$X_t$')
-                legend(ctags    )
-        
-             
-            pdx +=1;
-            ax = subplot(N_paths_to_visualize, 2, pdx); hold(True)
-            plot(ts, cs);
+        ylabel('frequency', fontsize = 24)  
+        if pdx == len(alphas)-1:
+            xlabel('$t$', fontsize = 24)
             
-            ylim( 1.25*array(alpha_bounds) )
-            ax.set_yticks((alpha_bounds[0], .0, alpha_bounds[1]))
-            if tdx == 0:
-                title(r'$\alpha(t)$')
-                legend(ctags)
-            if tdx == N_paths_to_visualize-1:
-                
-                subplot(N_paths_to_visualize, 2, pdx-1); 
-                xlabel('$t$' , fontsize = 24)
-                subplot(N_paths_to_visualize, 2, pdx); 
-                xlabel('$t$', fontsize = 24)
-                
     if fig_name != None:
         lfig_name = os.path.join(FIGS_DIR,
-                             fig_name + '_amax%d.pdf'%amax(simPathsList[0].cs))
+                             fig_name + '_thits_distn.pdf')
         print 'saving to ', lfig_name
         savefig(lfig_name)
     
     
 
-def GeneratePathsHarness(Tf, dt = .01, Npaths = 10, amax = 1.,
+def GeneratePathsHarness(Nblocks = 2,
+                         Nhits = 100,
+                         Tmax = 25., dt = .001, 
+                          amax = 4.,
+                          acrit = 1.,
                           simPs = SimulationParams(),
                           x_0 = .0,
                           visualize_paths = True):
-    Tbreak = 2.
-    def detControl(t, x):        
-        if mod(t, Tbreak) >= Tbreak/2.:
-            return amax
-        else:
-            return -amax 
-        
-    def fbControl(t,x):
-        return amax* sign(x);
-    
-    def placeboControl(t,x):
-        return .0
+ 
     
     
     #ASSIGN STRUCT PARAMS:
@@ -290,128 +254,133 @@ def GeneratePathsHarness(Tf, dt = .01, Npaths = 10, amax = 1.,
     #The random numbers:
     sqrt_dt = sqrt(dt);  
     
-    #the time points:
-    ts = r_[arange(.0, Tf, dt), Tf];    
-    N_ts = len(ts);
+    #the time points:   
+    N_ts = Tmax/dt;    
     
-    #the Gaussian incrments:
-    dWs = randn(N_ts-1, Npaths)* sqrt_dt
-     
     #the storage vetors:
-    xs_block_det = x_0*ones( (N_ts, Npaths));
-    xs_block_fb  = x_0*ones( (N_ts, Npaths));  
-    xs_block_plac = x_0*ones( (N_ts, Npaths));
-    
-    cs_block_det = zeros( (N_ts, Npaths));
-    cs_block_fb  = zeros( (N_ts, Npaths));
-    cs_block_placebo = zeros( (N_ts, Npaths));
+    hts_block = empty((3, Nblocks,Nhits)) 
 
     #the dynamics RHS:    
     def compute_dX(alpha, x, dW):
         return (alpha + (mu - x)/tauchar)*dt + sigma * dW
+    X_THRESH = 1.0
     ##MAin integratino loop
-    def computeTraj(xs, cs, alpha_func, ldWs):
-        for t, idx in zip(ts[1:], arange(N_ts)):
-            x_prev = xs[idx]
-            cs[idx] = alpha_func(t,x_prev)
-            xs[idx+1] = x_prev + compute_dX(cs[idx],  x_prev, ldWs[idx])
-                    
+    def computeHittingTime(x, alpha, ldWs):
+        thit = .0;
+        idx = 0;
+        for dW in ldWs:
+            if x>=X_THRESH:
+                break; 
+            x+=compute_dX(alpha, x, dW);
+            thit+=dt
+        return thit
+      
     
     #The batch integration
-    for cFun, x_block, c_block, c_tag in zip([detControl, fbControl, placeboControl],
-                                      [xs_block_det,  xs_block_fb, xs_block_plac],
-                                      [cs_block_det, cs_block_fb, cs_block_placebo],
-                                      ['det', 'feedback', 'placebo']):
+    alphas = [.0, 1.0, 4.0]
+    alpha_tags = ['zero', 'crit', 'max']
+    for bdx in xrange(Nblocks):
         
-        for idx in xrange(Npaths):
-            computeTraj(x_block[:,idx], c_block[:, idx], cFun, dWs[:, idx]);
+        #the common Gaussian incrments:
+        dWs = randn(Nhits, N_ts-1)* sqrt_dt;
+    
+        for adx, (alpha, alpha_tag) in enumerate( zip(alphas, alpha_tags)):
+            print adx, alpha, alpha_tag
             
-        (SimulationPaths(ts, x_block, c_block, simPs, c_tag)).save();
-    if visualize_paths: 
-        visualizePaths(Tf, Npaths, simParams = simPs)
-
+            for hdx in xrange(Nhits):
+                ldWs = dWs[hdx,:];
+                'compute hitting time'
+                hts_block[adx, bdx, hdx] = computeHittingTime(.0, alpha, ldWs);
+                if hts_block[adx, bdx, hdx] > Tmax-.1:
+                    print hts_block[adx, bdx, hdx]
+     
+                
+        
+#    if visualize_paths: 
+#        visualizePaths(Tf, Npaths, simParams = simPs)
+    (SimulationPaths(hts_block, simPs, alphas, alpha_tags)).save();
+    
+    
 
 from scipy.optimize import brentq
-def calcBetaEstimate(xs, ts, cs):
-    'assume the known sigma, mu = 1,0'
-    Xn = xs[:-1]
-    Xm = xs[1:]
-    an = cs[:-1]
-    Delta = ts[2]-ts[1]
-    N = len(Xn);
-            
+def calcBetaEstimate(hts, alpha, sigma):
+    '''given a set of hitting times hts and known alpha, sigma - 
+    calculate the other parameter beta using Max Likelihood'''
     
-    def f_beta_root(beta):
-        outer_term = N/2*(2*Delta*e**(-2*Delta*beta)/(e**(-2*Delta*beta) - 1) + 1/beta)
-        
-        inner_sum = ( -2*(Xm*e**(-Delta*beta) - (e**(-Delta*beta) - 1)*an/beta -
-                            Xn)**2*Delta*beta*e**(-2*Delta*beta)/(e**(-2*Delta*beta) - 1)**2 +
-                            2*(Xm*e**(-Delta*beta) - (e**(-Delta*beta) - 1)*an/beta -
-                            Xn)*(Delta*Xm*e**(-Delta*beta) - Delta*an*e**(-Delta*beta)/beta -
-                            (e**(-Delta*beta) - 1)*an/beta**2)*beta/(e**(-2*Delta*beta) - 1) -
-                            (Xm*e**(-Delta*beta) - (e**(-Delta*beta) - 1)*an/beta -
-                            Xn)**2/(e**(-2*Delta*beta) - 1) )
-        return outer_term - sum(inner_sum)
-        
+    'Max Time for the Solver'
+   
     
-    beta_root, rootResults = brentq(f_beta_root, .01, 100.000, xtol = 1e-3, rtol = 1e-8, full_output=True, disp=False )
     
-    if False == rootResults.converged:
-        print 'Brentq failed'
-        
-    return beta_root;
+    #Solver details:
+    dx = .05;
+    x_min  = -1.5;
+    dt = .025;    
+    Tf = amax(hts)+2*dt
+    params = [0, sigma]
+    
+    print  ' Tf=%.2f, alpha=%.2f'%( Tf,alpha)
+    #INit Solver:
+    S = ForwardSolver(params, 
+                      dx, x_min,
+                      dt, Tf) 
+    
+    alphas = alpha*ones_like(S._ts);
+    
+    def beta_nllk(beta):
+        ''' Тhis is the root'''
+        Fs = squeeze( S.solve(alphas,
+                              [beta]));
+        dt = S._ts[1] - S._ts[0]; 
+        gs = -diff(Fs[:, -1]) / dt;
 
-
-def estimateHarness(Tf, Npaths = 10, 
-                    simParams = SimulationParams(), fig_name=None, 
-                    ctags = ['det', 'feedback', 'placebo']):     
-    #Load:
-    simPathsList = [];
+        gs_interp = interp1d( S._ts[1:], gs)
+        nllk = -sum(log( gs_interp(hts) ) )
+#        print beta, nllk
+        return  nllk ; 
+        
+    
+    beta_est, nllk_val, ierr, numfunc= fminbound(beta_nllk, .05, 20, full_output = True);
      
-    for rdx, c_tag, in enumerate( ctags ):
+#    print beta_est, nllk_val
+    if 1 == ierr :
+        print 'fminbound hit max fevals'
         
-        TNMtcs_tag = [Tf, Npaths,
-                       simParams.mu, simParams.tau_char, simParams.sigma,
-                        c_tag]
-        
-        simPathsList.append(  SimulationPaths.load(TNMtcs_tag) );
-        
-    
-    betaEsts = dict(zip( ctags, [ [], [], [] ] ));
-    
-    for tdx in xrange(Npaths): 
-        
-        for simPaths, c_tag in zip( simPathsList,
-                                    ctags ):
-            ts = simPaths.ts;
-            xs = simPaths.xs[:, tdx];
-            cs = simPaths.cs[:, tdx];
-            
-#            print 'Estimating ', c_tag
-            try:
-                b_est = calcBetaEstimate( xs, ts, cs )
-            except ValueError:
-                b_est = NaN;
-                   
-            betaEsts[c_tag].append(b_est)
-            'sentinel'
-            
-    
-    
-#    VISUALIZE:
-    figure(); hold(True)
+    return beta_est;
 
-    for x, c_tag, col  in zip( [-1,0 , 1],
-                                    ctags,
-                                    ['b', 'r', 'g']):
-        bs = betaEsts[c_tag]; 
-        scatter(x*ones_like(bs), bs, c= col );
-        print c_tag, mean(bs), std(bs)
-    hlines(1./simParams.tau_char, -1, 1);
-    legend(ctags)
+
+def estimateHarness(Nblocks, Nhits, simPs,
+                     fig_name=None, reestimate = True):
+    
+    #Load:
+    simPaths = SimulationPaths.load([Nblocks, Nhits, simPs.mu, simPs.tau_char, simPs.sigma, ''])
+    
+    thits_Blocks = simPaths.thits_blocks;
+    
+    
+    alphas = simPaths.alphas;
+    Nalphas = len(alphas);
+    print 'Loaded %d Blocks of %d Hitting times for %d controls:'%(thits_Blocks.shape[1], thits_Blocks.shape[2], thits_Blocks.shape[0])
+ 
+    
+    betaEsts = empty((Nalphas, Nblocks))
+    for adx, alpha in enumerate(alphas):
+        for bdx in xrange(Nblocks):
+            hts = squeeze(thits_Blocks[adx, bdx,:]);
+            
+            betaEsts[adx, bdx] = calcBetaEstimate(hts, alpha, simPaths.simParams.sigma);
+            
+    
+    
+    simPaths.betaEsts = betaEsts;
+    
+    simPaths.save();
+    
+    print betaEsts
     
     return betaEsts
             
+    
+    
     
 def estimateHarnessSandbox(Tf, Npaths = 10, Npaths_to_visualize = 4,
                     simParams = SimulationParams(),   ctags = ['det', 'feedback', 'placebo'],
@@ -486,6 +455,56 @@ def estimateHarnessSandbox(Tf, Npaths = 10, Npaths_to_visualize = 4,
                                   'BetaRoot_' + fig_name + '.pdf')
         print 'saving to ', lfig_name
         savefig(lfig_name)
+
+
+def postAnalysis(Nblocks, Nhits, simPs,
+                 fig_name=None):
+    
+    #Load:
+    simPaths = SimulationPaths.load([Nblocks, Nhits, simPs.mu, simPs.tau_char, simPs.sigma, ''])
+    
+    betaEsts = simPaths.betaEsts
+    
+    ctags = simPaths.alpha_tags
+       
+#    VISUALIZE:
+    figure(figsize =(8,10)) ; hold(True)
+    for adx, x, c_tag, col  in zip( range(len(simPaths.alphas)),
+                                   [-1,0 , 1],
+                                    ctags,
+                                    ['b', 'r', 'g']):
+        bs = betaEsts[adx,:]; 
+        scatter(x*ones_like(bs), bs, c = col );
+        print c_tag, mean(bs), std(bs)
+    hlines(1./simPaths.simParams.tau_char, -1, 1);
+    legend(ctags)   
+    
+    #LATEXIFY:
+    
+    print 'latexifying:'
+    
+    latex_string = r'control type & mean($\hat\beta$) & std($\hat\beta$) \\ \hline '
+    
+    for adx, x, c_tag, col  in zip( range(len(simPaths.alphas)),
+                                   [-1,0 , 1],
+                                    ctags,
+                                    ['b', 'r', 'g']):
+        bs = betaEsts[adx,:]; 
+        scatter(x*ones_like(bs), bs, c = col );
+        latex_string+= r'%s & %.2f & %.2f \\' %(c_tag, mean(bs), std(bs))
+        
+    print latex_string
+        
+    latex_filename = os.path.join(FIGS_DIR,
+                                   'beta_hit_time_%d.txt'%(Nhits))    
+     
+    with open(latex_filename, 'w') as the_file:
+        the_file.write(latex_string)
+        print 'Latex written to ', latex_filename
+       
+    
+    
+  
     
 def latexifyResults(Npaths = 1000, Tfs = [8, 16,32] ):
     bEstimates  = {};
@@ -591,36 +610,37 @@ def BetaSigmaSweepHarness(regenerate_paths = True,
     print 'time_taken', time.clock() - start;   
         
 if __name__ == '__main__':       
-    from pylab import *    
+    from pylab import *  
     
-#    Tf = 32;
-#    Npaths = 100; 
-#    simPs = SimulationParams(tau_char = 8.)
+    Nblocks = 100; 
+    Nhits   = 1000;
+    simPs   = SimulationParams(tau_char = 1.)
+    
         
 #    visualizeControls(Tf = 16, fig_name='Fb_vs_det_control_illustrate');
+
+#    '''Simulate N passage times'''
+#    GeneratePathsHarness(Nblocks = Nblocks, 
+#                         Nhits = Nhits,
+#                         simPs = simPs)
+#    
+#    visualizePaths(Nblocks = Nblocks, 
+#                         Nhits = Nhits,
+#                         simPs = simPs)
+#
+#    '''Do the actual parameter estimation''' 
+#    estimateHarness(Nblocks = Nblocks, 
+#                         Nhits = Nhits,
+#                         simPs = simPs) 
     
-
-#    GeneratePathsHarness(Tf, Npaths = Npaths, amax = 1., simPs = simPs)
-
-#    visualizePaths(Tf, Npaths = Npaths, N_paths_to_visualize=4,
-#                    fig_name = 'det_vs_fb')
-#    visualizePaths(Tf, Npaths = Npaths)
-    
-    
-#    estimateHarness(Tf, Npaths,simParams = simPs)
-#    estimateHarnessSandbox(Tf, Npaths, fig_name='Tf=%d'%Tf)
-
-
-#    for Tf in [8,16,32]:
-#        GeneratePathsHarness(Tf, Npaths = Npaths, amax = 1.) 
-#    latexifyResults()
-
-    '''Visualize the root function for the Beta Estimates'''
-#    visualizeBetaRoot()
-
+#    '''visualize and latexify results'''
+#    postAnalysis(Nblocks = Nblocks, 
+#                         Nhits = Nhits,
+#                         simPs = simPs)
+     
 
     '''The sweep through beta /sigma'''
-    BetaSigmaSweepHarness()
+#    BetaSigmaSweepHarness()
     
     
     show()

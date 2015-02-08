@@ -8,7 +8,9 @@ from __future__ import division
 from numpy import *
 
 from ForwardSolver import ForwardSolver, ForwardSolution
+#from AdjointSolver import FPAdjointSolver as ForwardSolver
 from ControlBasisBox import piecewiseConst
+from matplotlib.pyplot import bar
 
 RESULTS_DIR = '/home/alex/Workspaces/Python/OptEstimate/Results/ControlOptimizer/'
 FIGS_DIR    = '/home/alex/Workspaces/Latex/OptEstimate/Figs/ControlOptimizer/'
@@ -27,21 +29,21 @@ class PiecewiseConstSolution():
         self.ts = ts
         self._thetas = thetas;
         self._mu = params[0];
-        self._beta = params[1]
+        self._sigma = params[1]
         self._method_info = method_info;
     
     @classmethod
     def _default_file_name(cls, self, params):
         mu = params[0];
-        beta = params[1]
+        sigma = params[1]
         Tf = params[2];
-        return 'PiecewsieConstSoln_m=%.1f_b=%.1f_Tf=%.1f'%(mu, beta,Tf)
+        return 'PiecewsieConstSoln_m=%.1f_s=%.1f_Tf=%.1f'%(mu, sigma,Tf)
     
     def save(self, file_name=None):
 #        path_data = {'path' : self}
         if None == file_name:
             file_name = self._default_file_name([self._mu,
-                                                 self._beta,
+                                                 self._sigma,
                                                  self._ts[-1]]);
         print 'saving path to ', file_name
         
@@ -53,10 +55,10 @@ class PiecewiseConstSolution():
         dump_file.close()
         
     @classmethod
-    def load(cls, file_name=None, mu_beta_Tf=None):
+    def load(cls, file_name=None, mu_sigma_Tf=None):
         ''' not both args can be None!!!'''
         if None == file_name:
-            file_name = cls._default_file_method(mu_beta_Tf);
+            file_name = cls._default_file_method(mu_sigma_Tf);
         print 'loading ', file_name
 
         file_name = os.path.join(RESULTS_DIR,
@@ -74,7 +76,7 @@ def NonUniformPriorDriver(num_thetas=16,
                           save_figs=False):
     mu_true = .0;
     theta_true  = .5;
-    beta_true = 1.;
+    sigma_true = 1.;
     
     Tf = 12.;
 
@@ -92,8 +94,8 @@ def NonUniformPriorDriver(num_thetas=16,
     x_min  = -1.5;
     dt = .025;
     print 'Xmin = ', x_min, ' Tf=', Tf, 'dx = ', dx, ' dt = ', dt
-    params = [mu_true, beta_true]
-    print 'mu = ', params[0], ' beta = ', params[1]
+    params = [mu_true, sigma_true]
+    print 'mu = ', params[0], ' sigma = ', params[1]
     #INit Solver:
     S = ForwardSolver(params, 
                       dx, x_min,
@@ -136,7 +138,7 @@ def NonUniformPriorDriver(num_thetas=16,
                           xtol=0.1, ftol=0.00001, maxiter = 50) 
         
         (PiecewiseConstSolution(S._ts, alpha_opt,
-                               thetas, [mu_true, beta_true],
+                               thetas, [mu_true, sigma_true],
                                method_info='Nelder-Mead - KL+energy')).save('NonUniformPrior')
 
     alpha_opt = PiecewiseConstSolution.load('NonUniformPrior').alpha_opt                
@@ -177,7 +179,7 @@ def PiecewiseConstDriver_KL(num_thetas=4,
     
     mu_true = .0;
     theta_true  = .5;
-    beta_true = 1.;
+    sigma_true = 1.;
     
     Tf = 12.;
 
@@ -194,8 +196,8 @@ def PiecewiseConstDriver_KL(num_thetas=4,
     x_min  = -1.5;
     dt = .025;
     print 'Xmin = ', x_min, ' Tf=', Tf, 'dx = ', dx, ' dt = ', dt
-    params = [mu_true, beta_true]
-    print 'mu = ', params[0], ' beta = ', params[1]
+    params = [mu_true, sigma_true]
+    print 'mu = ', params[0], ' sigma = ', params[1]
     #INit Solver:
     S = ForwardSolver(params, 
                       dx, x_min,
@@ -239,7 +241,7 @@ def PiecewiseConstDriver_KL(num_thetas=4,
                           xtol=0.1, ftol=0.00001, maxiter = 50) 
         
         (PiecewiseConstSolution(S._ts, alpha_opt,
-                               thetas, [mu_true, beta_true],
+                               thetas, [mu_true, sigma_true],
                                method_info='Nelder-Mead - KL+energy')).save('BasicNMTest')
 
     alpha_opt = PiecewiseConstSolution.load('BasicNMTest').alpha_opt                
@@ -294,52 +296,58 @@ def PiecewiseConstDriver_KL(num_thetas=4,
 #    plot(ts, cheb_alphas)
         
         
-def PiecewiseConstDriver_MI(num_thetas=4,
-                         num_intervals = 5,
-                         recalculate=True,
-                         save_figs=False):
-    mu_true = .0;
-    theta_true  = .5;
-    beta_true = 1.;
+def PiecewiseConstDriver_MI(num_thetas=2,
+                            num_intervals = 6,
+                            recalculate=True,
+                            save_figs=False):
+    mu_true    = .0;
+    theta_true  = 1;
+    sigma_true = 1.;
     
     Tf = 12.;
-
-    energy_eps = .0001;
     
     #this should equal theta, but here equals average(thetas) to represent our ignorance
-    alpha_max = 2.0
-    alpha_crit_guess = 1.
-    theta_min, theta_max = 0.1, 2.0
-    thetas = linspace(theta_min, theta_max, num_thetas)
+    alpha_max = 4.0
+    alpha_crit_guess = 1./theta_true
+#    theta_min, theta_max = 0.1, 2.0
+    thetas =  [.5,2.];#linspace(theta_min, theta_max, num_thetas)
     
     #Solver details:
     dx = .05;
     x_min  = -1.5;
     dt = .025;
     print 'Xmin = ', x_min, ' Tf=', Tf, 'dx = ', dx, ' dt = ', dt
-    params = [mu_true, beta_true]
-    print 'mu = ', params[0], ' beta = ', params[1]
+    params = [mu_true, sigma_true]
+    print 'mu = ', params[0], ' sigma = ', params[1]
     #INit Solver:
     S = ForwardSolver(params, 
                       dx, x_min,
                       dt, Tf)
     
     def f_objective(alpha_chars):
+        '''J = sum_params sum_time g(time|param) param_weight log( g / sum_params(g) )
+        '''
         
         alphas = piecewiseConst(alpha_chars, S._ts);
         Fs = S.solve(alphas,
-                          thetas)
+                     thetas)
         dt = S._ts[1] - S._ts[0]; 
         gs = -diff(Fs[:, :, -1]) / dt
         
+        '''Calculate the marginal hitting time distribution'''
         mean_gs =  mean(gs, axis = 0) /num_thetas;
         
-        null_indices = (mean_gs < 1e-8)
+        '''Record Indices where unconditionally there is no probability of a hitting time'''
+         
         
-        log_term = empty_like(gs);
-        for pk in xrange(num_thetas):
-            log_term[pk,:]  = log(gs[pk,:]/mean_gs)
-            log_term[pk, null_indices]  = .0;
+        log_term = zeros_like(gs);
+         
+        for p_k in xrange(num_thetas):
+            lgs = gs[p_k,:];
+            active_idxs = lgs>1e-8;
+            log_term[p_k,active_idxs]  = log(lgs[active_idxs] /
+                                              mean_gs[active_idxs])
+            
         
         #sum it:
         MI_integral = dt * sum(log_term * gs) / num_thetas;
@@ -350,40 +358,42 @@ def PiecewiseConstDriver_MI(num_thetas=4,
 
     #MAIN OPTIMIZER CALL:
     #initialize:
-#        alpha_init = theta_true * ones(num_intervals);
-    alpha_init = array([1.11812682, 0.48162286,
-                            0.41603237,  0.347,  0.5837312]);
+    alpha_init = .0 * ones(num_intervals);
+#    alpha_init = array([1.11812682, 0.48162286,
+#                            0.41603237,  0.347,  0.5837312]);
     soln_tag = 'BasicNMTest_MI'
     if recalculate:
         from scipy.optimize import fmin
         #calculate soln:
         alpha_opt = fmin(f_objective, alpha_init,
-                          xtol=0.1, ftol=0.00001, maxiter = 50) 
+                          xtol=0.1, ftol=0.000001, maxiter = 50) 
         
         (PiecewiseConstSolution(S._ts, alpha_opt,
-                               thetas, [mu_true, beta_true],
+                               thetas, [mu_true, sigma_true],
                                method_info='Nelder-Mead - MI')).save(soln_tag)
 
     alpha_opt = PiecewiseConstSolution.load(soln_tag).alpha_opt                
     
-    figure(figsize=(17.,6)) 
-#    subplot(211)       
-    plot(S._ts, theta_true* ones_like(S._ts), 'b', label='crit')
-    plot(S._ts, alpha_max* ones_like(S._ts), 'k', label='max')
-    plot(S._ts, zeros_like(S._ts), 'g', label='nought')
-    plot(S._ts, piecewiseConst(alpha_opt, S._ts), 'r', label='opt')
-    ylim(-.5, 2.5)
+    '''The Control Plots:'''
+    figure(figsize=(17.,10)) 
+    subplot(311)       
+    plot(S._ts, ones_like(S._ts) / theta_true, 'g', label='crit')
+    plot(S._ts, alpha_max* ones_like(S._ts), 'c', label='max')
+    plot(S._ts, zeros_like(S._ts), 'r', label='zero')
+    plot(S._ts, piecewiseConst(alpha_opt, S._ts), 'b', label='opt')
+    ylim(-.5, alpha_max+.5)
     title('Different Controls');
     xlabel(r'$t$', fontsize = label_font_size)
     ylabel(r'$\alpha(t)$', fontsize = label_font_size)
     legend();
+        
     
-    
-    
-    figure()
-    for alpha_knots, alpha_tag  in zip([alpha_opt, theta_true*(alpha_opt),
-                                         alpha_init, mean(alpha_opt)*ones_like(alpha_opt)],
-                                      ['opt', 'crit', 'init', 'mean-opt']):
+#    figure()
+    subplot(312)
+    objectivevals = [];
+    for alpha_knots, alpha_tag  in zip([alpha_opt, theta_true*ones_like(alpha_opt),
+                                         .0*ones_like(alpha_opt), alpha_max*ones_like(alpha_opt)],
+                                      ['opt', 'crit', 'zero', 'max']):
         alphas = piecewiseConst(alpha_knots, S._ts);
         Fs = S.solve(alphas,
                       array([theta_true])).squeeze();
@@ -391,15 +401,22 @@ def PiecewiseConstDriver_MI(num_thetas=4,
         gs = -diff(Fs[:, -1]) / dt
         
         plot(S._ts[:-1], gs, label=alpha_tag)
-        
-        print alpha_tag,': ', f_objective(alpha_knots)
+        ylabel(r'Prob $t_sp = t$')
+        xlabel('$t$')
+        print alpha_tag 
+        objectivevals.append(-f_objective(alpha_knots))
+       
     legend()
+    
+    subplot(313) 
+    bar(arange(4), array(objectivevals) );
+    xticks(arange(4)+.5,  ['opt', 'crit', 'zero', 'max'])
         
     
     
     if save_figs:
         file_name = os.path.join(FIGS_DIR,
-                                 'basic_test_controls.pdf')
+                                 'piecewise_const_controls.pdf')
         print 'saving to ', file_name
         savefig(file_name)
     
@@ -445,7 +462,7 @@ if __name__ == '__main__':
 #    PiecewiseConstDriver_KL(recalculate=True,
 #                         save_figs = False)
     PiecewiseConstDriver_MI(recalculate=False,
-                         save_figs = False)
+                             save_figs = False)
 
 #    NonUniformPriorDriver(recalculate=True,
 #                          save_figs = False)
