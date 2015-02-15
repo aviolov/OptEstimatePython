@@ -135,8 +135,8 @@ class FPAdjointSolver():
         self._xs, self._dx = self._space_discretize(x_min, self._dx)
 
     @classmethod
-    def calculate_xmin(cls, alpha_bounds, tau_chars , mu_sigma, num_std = 2.0):     
-        XMIN_AT_LEAST = -.5;   
+    def calculate_xmin(cls, alpha_bounds, tau_chars, mu_sigma, num_std = 2.0):     
+        XMIN_AT_LEAST = -0.5;   
         mu,   sigma = [x for x in mu_sigma]
         tc_max = amax(tau_chars)
         alpha_min = alpha_bounds[0]
@@ -150,7 +150,8 @@ class FPAdjointSolver():
         max_speed = abs(mu) + max(alpha_bounds) + max([xmin, xthresh]) / tc_min;     
         return factor * (sigma / max_speed);
     @classmethod
-    def calculate_dt(cls, alpha_bounds, tau_chars, mu_sigma, dx, xmin, factor=2., xthresh = 1.0):
+    def calculate_dt(cls, alpha_bounds, tau_chars,
+                      mu_sigma, dx, xmin, factor=2., xthresh = 1.0):
         ''' dt = factor (dx / max_speed)'''
         mu,   sigma = [x for x in mu_sigma]     
         tc_min = amin(tau_chars)
@@ -298,7 +299,7 @@ class FPAdjointSolver():
             print 'xmin = %.f, dx = %f, dt = %f' %(self.getXmin(), dx,dt)
         
         num_weights = len(tau_char_weights);
-        fs_mean =  tensordot(fs , tau_char_weights, axes=[0,0]);
+#        fs_mean = tensordot(fs , tau_char_weights, axes=[0,0]);
         
         #Allocate memory for solution:
         ps = zeros((num_weights, 
@@ -590,7 +591,35 @@ class FPAdjointSolver():
                 
                 
         return fs
-
+    def _psolve_C(self, tau_chars, tau_char_weights,
+                    mu_sigma, alphas, fs,
+                    visualize=False, save_fig=False ):
+        '''interface to the adjoint C solver'''
+        array_shape = ( len(tau_chars), 
+                        self._num_nodes(),
+                        self._num_steps() )
+        ps = empty(array_shape);
+        
+        ''' get the BCs - main link with fs '''
+        BCs = self._getAdjointBCs(tau_char_weights,
+                                   fs, 
+                                    mu_sigma[1] );
+        
+        for tdx, tau in enumerate(tau_chars):        
+                
+            mu_tau_sigma = array([mu_sigma[0], tau, mu_sigma[1]]);
+            'main ext.lib call: for some bizarre reason you need to wrap arrays inside an array() call:'            
+            lp = ext_fpc.solve_p(mu_tau_sigma,
+                                 array(squeeze(BCs[tdx,:])),
+                                 array(alphas),
+                                 array(self._ts),
+                                 array(self._xs));
+                                  
+            ps[tdx,:,:] = lp;
+            
+        return ps
+        
+        
     def _fsolve_C(self,  tau_chars, tau_char_weights,
                     mu_sigma, alphas, 
                     visualize=False, save_fig=False):
@@ -860,6 +889,8 @@ def timeAdjointSolver(tb = [.5, 1.25], Tf = 1.5, energy_eps = .1, alpha_bounds =
     end = time.clock()
     print 'compute time = ',end-start, 's'
     
+'''The main routine to calculate the Optimal MI Control, it just wraps 
+    gdOptimalControl_Aggressive'''    
 def calculateOptimalControl(tau_chars, tau_char_weights,
                             mu_sigma,   
                             Tf = 1.0,
@@ -1823,6 +1854,14 @@ def PyVsCDriver(tau_chars,
     legend();
 #    pygs = S.solve_hittime_distn_per_parameter(tau_chars[0], mu_sigma, alphas, visualize=False)
     
+    ''' backward solution '''
+    pyps = S._psolve( tau_chars, tau_char_weights,
+                       mu_sigma, alphas, Cfs)
+    Cps = S._psolve_C( tau_chars, tau_char_weights,
+                       mu_sigma, alphas, visualize=False);
+    
+    
+    
 
 def CVsCDriver():
     simPs   = SimulationParams(tau_char = 1.)
@@ -1992,6 +2031,7 @@ def PriorSpreadBox(mu_sigma, Tf,
     
 def PriorSpreadWidthBox(mu_sigma, Tf, 
                         alpha_bounds = (-2,2), 
+                        Npts_in_prior = 2, delta_w = 0.1,
                         resimulate=False, fig_name = None):
     
     '''Chech whether different priors, here the spread of the prior makes a difference on the optimal control
@@ -2001,11 +2041,11 @@ def PriorSpreadWidthBox(mu_sigma, Tf,
     controlsDict = {};
     figure( figsize = (17, 6)); hold(True);
     
-    widths = arange(.1, 1., .1)
+    widths = arange(0.1, 1., delta_w)
     widths = [.1,     .5   ,.9];
 #    widths = [.8 , .9];
     for width in widths:          
-        tau_chars = [1-width, 1./(1-width)]
+        tau_chars = linspace(1-width, 1./(1-width), Npts_in_prior)
         tau_char_weights = ones_like(tau_chars)/len(tau_chars); 
         print width,':',  '\t', tau_chars, ' check sumprior = %.4f'%sum(tau_char_weights )
         
@@ -2075,7 +2115,11 @@ def OptControlProfiler(mu_sigma = [0.,1.],
     pyprof.print_stats()
 #    cprof  = pstats.Stats('cfsolve.prof')
 #    cprof.sort_stats('time')
-#    cprof.print_stats()        
+#    cprof.print_stats()    
+
+    '''Conclusion: The bottleneck is by far in the adjoint calculation!
+    fsolve(in C) takes .066 secs
+    psolve (in python) takes 24.164 secs'''    
 
         
 if __name__ == '__main__':
@@ -2111,16 +2155,25 @@ if __name__ == '__main__':
 #    NtausBox(mu_sigma, Tf, alpha_bounds=alpha_bounds,
 #             resimulate=False);
 
-    ''' check if there is a difference between a wide spread prior vs. a concentrated prior'''
+    ''' check if there is a difference between a wide spread prior vs. a concentrated prior:
+      there is'''
 #    Tf = 5;
-##    PriorSpreadBox(mu_sigma, Tf, alpha_bounds, resimulate=True)
-    PriorSpreadWidthBox(mu_sigma, Tf, alpha_bounds,
-                         resimulate=False, fig_name = 'Effect_of_prior_spread')
+#    PriorSpreadBox(mu_sigma, Tf, alpha_bounds, resimulate=True)
+#
+#    PriorSpreadWidthBox(mu_sigma, Tf, alpha_bounds,
+#                        Npts_in_prior=4,
+#                         resimulate=True) #, fig_name = 'Effect_of_prior_spread')
     
-    '''move the forward compuation to C:'''
+    '''move the forward computation to C:'''
+#    PyVsCDriver(tau_chars, mu_sigma, Tf)
+#    CVsCDriver( )
+    
+    
+    '''move the backward computation to C:'''
 #    CVsCDriver( )
 #    PyVsCDriver(tau_chars, mu_sigma, Tf)
-    
+
+
     '''Profile the bottlenecks:'''
 #    OptControlProfiler();
     

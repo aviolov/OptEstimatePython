@@ -243,15 +243,16 @@ def calcBetaEstimate(lSolver, hts, alphaF, mu_sigma,
     '''given a set of hitting times hts and known alpha, sigma - 
     calculate the other parameter beta using Max Likelihood'''
     
-    'F solver:'
-    dx = .05;
-    x_min  = -1.5;
+    '''NOT USED:'''
+#    'F solver:'
+#    dx = .05;
+#    x_min  = -1.5;
     dt = .025;    
     Tf = amax(hts)+2*dt 
-    S = ForwardSolver(mu_sigma, 
-                      dx, x_min,
-                      dt, Tf)     
-    alphas_for_F = alphaF( S._ts );
+#    S = ForwardSolver(mu_sigma, 
+#                      dx, x_min,
+#                      dt, Tf)     
+#    alphas_for_F = alphaF( S._ts );
     
     '''f Solver:'''
     lSolver.setTf(Tf);
@@ -1021,7 +1022,7 @@ if __name__ == '__main__':
 #                   Nhits = Nhits) #fig_name = 'three_pt_prior')
 
     '''Inspect the estimator routines for various test cases / convergences:'''
-    estimatorWorkbench(simPs, fbkSoln)  
+#    estimatorWorkbench(simPs, fbkSoln)  
   
 
     '''Do the actual parameter estimation''' 
