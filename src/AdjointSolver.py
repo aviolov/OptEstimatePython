@@ -17,6 +17,8 @@ from scipy import interpolate
 import ext_fpc
 from HitTime_MI_Beta_Estimator import SimulationParams
 
+from TauParticleEnsemble import TauParticleEnsemble
+
 RESULTS_DIR = '/home/alex/Workspaces/Python/OptEstimate/Results/FP_Adjoint/'
 FIGS_DIR    = '/home/alex/Workspaces/Latex/OptEstimate/Figs/FP_Adjoint'
 
@@ -139,15 +141,15 @@ class FPAdjointSolver():
         XMIN_AT_LEAST = -0.5;   
         mu,   sigma = [x for x in mu_sigma]
         tc_max = amax(tau_chars)
-        alpha_min = alpha_bounds[0]
+        alpha_min = max(alpha_bounds[0], -1.);
         xmin = tc_max*alpha_min - num_std*sigma*sqrt(tc_max/2.0);
         return min([XMIN_AT_LEAST, xmin])
     @classmethod
-    def calculate_dx(cls, alpha_bounds, tau_chars, mu_sigma, xmin, factor = 1e-1, xthresh = 1.0):
+    def calculate_dx(cls, alpha_bounds, tau_chars, mu_sigma, xmin, factor = 0.5, xthresh = 1.0):
         #PEclet number based calculation:
         mu,   sigma = [x for x in mu_sigma]
         tc_min = amin(tau_chars)
-        max_speed = abs(mu) + max(alpha_bounds) + max([xmin, xthresh]) / tc_min;     
+        max_speed = max(alpha_bounds) + (abs(mu) + max( [abs(xmin), abs(xthresh)])) / tc_min;     
         return factor * (sigma / max_speed);
     @classmethod
     def calculate_dt(cls, alpha_bounds, tau_chars,
@@ -166,7 +168,7 @@ class FPAdjointSolver():
     
     def _getICs(self, xs, alpha0, sigma):
         #WARNING! TODO: HOw do you choose 'a' correctly! 
-        a = .1;
+        a = 0.1;
         pre_ICs = exp(-xs**2 / a**2) / (a * sqrt(pi))
         ICs = pre_ICs / (sum(pre_ICs)*self._dx) 
         return ICs
@@ -280,10 +282,14 @@ class FPAdjointSolver():
         J  = sum(integrand)*dt
              
         return J
-        
-        
     
     def _psolve(self, tau_chars, tau_char_weights, mu_sigma,
+                 alphas, fs, visualize=False, save_fig=False):
+        return self._psolve_C(tau_chars, tau_char_weights,
+                               mu_sigma, alphas, fs,
+                               visualize, save_fig)
+    
+    def _psolve_Py(self, tau_chars, tau_char_weights, mu_sigma,
                  alphas, fs, visualize=False, save_fig=False):
         'rip params:'
         mu, sigma = [x for x in mu_sigma]
@@ -309,12 +315,13 @@ class FPAdjointSolver():
         #Impose TCs: automoatic they are 0
 #        ps[:,-1] = self._getTCs(xs, alpha_max+mu, tauchar, sigma)
         
-        #Impose BCs at upper end: 
+        'Impose BCs at upper end:' 
         ps[:, -1, :] = self._getAdjointBCs(tau_char_weights,
                                            fs, 
                                            sigma);
             
-        
+        'Reset the TCs'
+        ps[:, :, -1] = .0;
         if visualize:
             figure()
             subplot(311)
@@ -353,7 +360,7 @@ class FPAdjointSolver():
         for pdx, tau_char in enumerate(tau_chars):
             for tk in xrange(self._num_steps()-2,-1, -1):
                 #Rip the forward-in-time solution:
-                p_forward = ps[pdx, :,tk+1];
+                p_forward = ps[pdx, :, tk+1];
     
                 #Rip the control:
                 alpha_forward = alphas[tk+1]
@@ -365,7 +372,7 @@ class FPAdjointSolver():
                 
                 #Form the RHS:
                 L_forward = U_forward*(p_forward[2:] - p_forward[:-2]) / (2.* dx) + \
-                            D        * diff(p_forward, 2) / dx_sqrd;  
+                            D        *(p_forward[2:]- 2*p_forward[1:-1] + p_forward[:-2] ) / dx_sqrd;  
                 
                 #Impose the x_min BCs: homogeneous Newmann: and assemble the RHS: 
                 RHS = r_[0.,
@@ -376,19 +383,20 @@ class FPAdjointSolver():
                 u =  U_current / (2*dx);
                 d_off = D / dx_sqrd;
                         
-                L_left = -.5*dt*(d_off - u[1:-1]);
+                L_left = -0.5*dt*(d_off - u[:-1]);
                 M.setdiag(L_left, -1);
                 
                 #Upper Diagonal
-                L_right = -.5*dt*(d_off + u[1:]);
+                L_right = -0.5*dt*(d_off + u);
                 M.setdiag(r_[NaN,
                              L_right], 1);
                 #Bottom BCs:
                 M[0,0] = -1.; M[0,1] = 1.;
                 
                 #add the terms coming from the upper BC at the backward step to the end of the RHS
-                p_upper_boundary = ps[pdx, -1,tk];
-                RHS[-1] += .5* dt*(D * p_upper_boundary / dx_sqrd + U_current[-1] *p_upper_boundary / (2*dx) )
+                p_upper_boundary = ps[pdx, -1, tk];
+                RHS[-1] += 0.5*dt*(d_off * p_upper_boundary + \
+                                   u[-1]*p_upper_boundary )
                 
                 #Convert mass matrix to CSR format:
                 Mx = M.tocsr();            
@@ -609,11 +617,11 @@ class FPAdjointSolver():
                 
             mu_tau_sigma = array([mu_sigma[0], tau, mu_sigma[1]]);
             'main ext.lib call: for some bizarre reason you need to wrap arrays inside an array() call:'            
-            lp = ext_fpc.solve_p(mu_tau_sigma,
-                                 array(squeeze(BCs[tdx,:])),
+            lp = ext_fpc.solve_p(mu_tau_sigma,                                 
                                  array(alphas),
                                  array(self._ts),
-                                 array(self._xs));
+                                 array(self._xs),
+                                 array(squeeze(BCs[tdx,:])));
                                   
             ps[tdx,:,:] = lp;
             
@@ -1811,58 +1819,89 @@ def visualizeRegimes(tau_chars,
 def PyVsCDriver(tau_chars,
                  mu_sigma, 
                  Tf):
-    xmin = FPAdjointSolver.calculate_xmin(alpha_bounds, tau_chars , mu_sigma, num_std = 1.0)
-    dx = FPAdjointSolver.calculate_dx(alpha_bounds, tau_chars, mu_sigma, xmin)
-    dt = FPAdjointSolver.calculate_dt(alpha_bounds, tau_chars, mu_sigma,
-                                      dx, xmin, factor = 4.0)
+    xmin = FPAdjointSolver.calculate_xmin(alpha_bounds, tau_chars ,
+                                           mu_sigma, num_std = 1.0)
+    dx = FPAdjointSolver.calculate_dx(alpha_bounds, tau_chars,
+                                       mu_sigma, xmin)
+    dt = FPAdjointSolver.calculate_dt(alpha_bounds, tau_chars,
+                                       mu_sigma,  dx, xmin, factor = 4.0)
   
     #Set up solver
     S = FPAdjointSolver(dx, dt, Tf, xmin)
-#    S = FPAdjointSolver(0.5, .99, 1, -0.5);
-#    tau_chars = tau_chars[:1];
-#    alphas = array([.0,.0])
     print 'Solver params: xmin, dx, dt, Nx, Nt', S._xs[0], S._dx, S._dt, S._num_nodes(), S._num_steps(); 
     
     ts = S._ts;
     alphas = sin(2*pi*ts);
     tau_char_weights = ones_like(tau_chars) / len(tau_chars); 
     
-    pystart = time.clock();
-    pyfs = S._fsolve_Py( tau_chars, tau_char_weights,
-                       mu_sigma, alphas, visualize=False)
-    print 'pytime = %.8f' %(time.clock() - pystart)
+#    pystart = time.clock();
+#    pyfs = S._fsolve_Py( tau_chars, tau_char_weights,
+#                       mu_sigma, alphas, visualize=False)
+#    print 'pytime = %.8f' %(time.clock() - pystart)
         
     Cstart = time.clock();
     Cfs = S._fsolve( tau_chars, tau_char_weights,
                        mu_sigma, alphas, visualize=False);
     print 'Ctime = %.8f' %(time.clock() - Cstart)
 
-    'compare G'    
-#    print 'py  sum:', sum(pyfs[0,:, 1:-1:5], axis=0)*S._dx;
-#    print 'C sum:'  , sum(Cfs[0,:, 1:-1:5], axis=0)*S._dx;
-         
-    'compare norms:'
-    py2c_error = sum(abs(pyfs - Cfs))
-    print "py2c_error", py2c_error
-    
-    Gpy = sum(pyfs[0,:, :], axis=0)*S._dx;
-    Gc =  sum(Cfs[0,:, :], axis=0)*S._dx;
-    
-    figure(); hold(True);
-    plot(S._ts, Gpy, label='py');
-    plot(S._ts, Gc, label='C');
-    legend();
-#    pygs = S.solve_hittime_distn_per_parameter(tau_chars[0], mu_sigma, alphas, visualize=False)
+    'Compare f'
+    ids = r_[arange(0,S._num_steps(), 10),
+             S._num_steps() - 2, S._num_steps()-1];
+    Nids = len(ids);
+ 
+#    py2c_error = sum(abs(pyfs - Cfs))
+#    print "py2c_error", py2c_error
+ 
+#    'compare G'  
+#    Gpy = sum(pyfs[0,:, :], axis=0)*S._dx;
+#    Gc =  sum(Cfs[0,:, :], axis=0)*S._dx;
+#    
+#    'visualize f comparison:'
+#    figure();
+#    for pdx, idx in enumerate(ids):
+#        subplot(ceil(Nids/2), 2, pdx+1)
+#        hold(True);
+#        Cf0s = Cfs[0,:, idx];
+#        pyf0s = pyfs[0,:, idx]
+#        plot(S._xs, Cf0s, 'rx-')
+#        plot(S._xs, pyf0s, 'gx-')
+#        title('Cps vs pyps (t=%.2f)'%S._ts[idx])
+#    figure(); hold(True);
+#    plot(S._ts, Gpy, 'gx-', label='py');
+#    plot(S._ts, Gc,'rx-', label='C');
+#    title('Survival Distn py vs. C')
+#    legend();
+
+
     
     ''' backward solution '''
     pyps = S._psolve( tau_chars, tau_char_weights,
                        mu_sigma, alphas, Cfs)
+    
     Cps = S._psolve_C( tau_chars, tau_char_weights,
-                       mu_sigma, alphas, visualize=False);
+                       mu_sigma, alphas, Cfs); 
+    print Cps.shape
     
+    figure();
+    for pdx, idx in enumerate(ids):
+        subplot(ceil(Nids/2), 2, pdx+1)
+        hold(True);
+        Cp0s = Cps[0,:, idx];
+        pyp0s = pyps[0,:, idx]
+        plot(S._xs, Cp0s, 'rx-')
+        plot(S._xs, pyp0s, 'gx-')
+        title('Cfs vs pyfs (t=%.2f)'%S._ts[idx])
     
+    figure()
+    plot(S._ts, Cps[0,-1,:], 'rx-')
+    hold(True);
+    plot(S._ts, pyps[0,-1,:], 'gx-')
+    title('BCs')  
+                       
+    'compare p'
+    py2c_error = sum(abs(pyps - Cps))
+    print "py2c_error", py2c_error
     
-
 def CVsCDriver():
     simPs   = SimulationParams(tau_char = 1.)
     Tf = 5.;    
@@ -1991,7 +2030,9 @@ def NtausBox(mu_sigma, Tf,
 def PriorSpreadBox(mu_sigma, Tf, 
                    alpha_bounds = (-2,2), resimulate=False):
     
-    '''Chech whether different priors, here the spread of the prior makes a difference on the optimal control
+    '''Chech whether priors of different width (spread) result in different optimal
+    stimulation (perturbation/control). 
+    
     CONCLUSION: It looks like it really does!!!
     '''
     
@@ -1999,8 +2040,11 @@ def PriorSpreadBox(mu_sigma, Tf,
 #                      exp(randn(10)*.1)];
 #    prior_tags = ['wide_prior', 'concentrated_prior'] 
     
-    tau_chars_list = linspace(.65, 1.35, 2),
-    prior_tags = [ 'concentrated_prior'] 
+    Ntaus = 2
+    tau_chars_list = [ linspace(.2 , 5.0, Ntaus), 
+                       linspace(.67, 1.5, Ntaus),
+                       linspace(.91, 1.1, Ntaus)]
+    prior_tags = [ 'wide_prior', 'medium_prior', 'concentrated_prior'] 
 
     for tdx, (tau_chars, prior_tag) in enumerate(zip(tau_chars_list, 
                                                      prior_tags)):
@@ -2027,17 +2071,94 @@ def PriorSpreadBox(mu_sigma, Tf,
                          
         visualizeRegimes(tau_chars, mu_sigma, Tf, soln_name = prior_tag)
     
-               
+
+def OptimizerICs(mu_sigma, Tf=12,
+                  alpha_bounds = (-2,2),
+                   resimulate=True):
+    
+    '''Chech whether starting the optiizer in different ICs result in the same final Opt Control
+    CONCLUSION: Yep...:(
+    '''
+    Ntaus = 25
+    tau_chars_list = [ linspace(0.2, 5.0, Ntaus), 
+                       linspace(0.5, 2.0, Ntaus),
+                       linspace(0.8,1.25, Ntaus)]
+    prior_tags = [ 'wide_prior', 'medium_prior', 'concentrated_prior'] 
+    
+    tau_chars_list = tau_chars_list[ 1:3 ]
+    prior_tags = prior_tags[1:3 ] 
+    
+#    tau_chars_dict = dict(zip(tau_chars_list,  prior_tags));
+    alpha_min  = .999*alpha_bounds[0];     
+    alpha_max = .999*alpha_bounds[-1];  
+    init_ts = linspace(0, Tf, 100);
+    init_ts_cs_dict = {'bangbang': [init_ts,  alpha_min*(init_ts<Tf/2) + alpha_max*(init_ts>Tf/2)],
+#                       'linear': [init_ts,  (alpha_max-alpha_min)* (init_ts/Tf ) + alpha_min ], #'zero': [init_ts, zeros_like(init_ts)], #'zero': [init_ts, zeros_like(init_ts)],
+                       'tanh': [init_ts,  alpha_max*tanh(init_ts - Tf/2) ], #'zero': [init_ts, zeros_like(init_ts)], #'zero': [init_ts, zeros_like(init_ts)],
+                       'cos': [init_ts, 0.99*alpha_max*cos(2*pi*init_ts/Tf)]}
+                       # 'multicos': [init_ts, 0.5*alpha_max*cos(2*pi*init_ts/Tf)]}
+    
+    'MAIN LOOP:'
+    for tdx, (tau_chars, prior_tag) in enumerate(zip(tau_chars_list, 
+                                                     prior_tags)):
+        
+        print tdx,':', prior_tag, '\t', tau_chars[0], tau_chars[-1]
+        tau_char_weights = ones_like(tau_chars)/len(tau_chars); 
+        
+        resultsDict = {};
+        
+        for init_tag, init_ts_cs in init_ts_cs_dict.iteritems():
+            soln_tag = prior_tag + init_tag;
+             
+            if resimulate:
+                'Solve'
+                lSolver, fs, ps, cs_iterates, J_iterates = \
+                    calculateOptimalControl(tau_chars, tau_char_weights,
+                                            mu_sigma,
+                                            Tf=Tf ,  
+                                            alpha_bounds=alpha_bounds,
+                                            initial_ts_cs = init_ts_cs, 
+                                            visualize=False)
+    
+                'Save'
+                (FBKSolution(tau_chars, tau_char_weights,
+                         mu_sigma, alpha_bounds,
+                         lSolver,
+                         fs, ps,
+                         cs_iterates, J_iterates)).save( soln_tag )
+                         
+#            visualizeRegimes(tau_chars, mu_sigma, Tf, soln_name = soln_tag)            
+            resultsDict[init_tag] =  FBKSolution.load( soln_tag )
+        
+        'Visualize per prior:'
+        figure(figsize=(17,12))
+        for init_tag, fbkSoln in resultsDict.iteritems():
+            subplot(211); hold(True)
+            plot(fbkSoln._Solver._ts, fbkSoln._cs_iterates[-1], label=init_tag)
+            legend(loc='lower right');
+            subplot(212); hold(True);
+            plot(-array(fbkSoln._J_iterates), 'x-', label=init_tag);
+            legend();
+            print fbkSoln._J_iterates, init_tag
+        title(prior_tag);
+        
+             
     
 def PriorSpreadWidthBox(mu_sigma, Tf, 
                         alpha_bounds = (-2,2), 
                         Npts_in_prior = 2, delta_w = 0.1,
                         resimulate=False, fig_name = None):
     
-    '''Chech whether different priors, here the spread of the prior makes a difference on the optimal control
-    CONCLUSION: It looks like it really does!!!
-    '''
+    '''Check whether different priors, here the spread of the prior makes a 
+    difference on the optimal control
     
+    CONCLUSION: It looks like it really does!!!
+
+    This is very similar to:
+    
+    PriorSpreadBox(mu_sigma, Tf, alpha_bounds, resimulate)
+    PriorSpreadWidthBox(mu_sigma, Tf, alpha_bounds, Npts_in_prior, delta_w, resimulate, fig_name)
+    '''
     controlsDict = {};
     figure( figsize = (17, 6)); hold(True);
     
@@ -2087,6 +2208,65 @@ def PriorSpreadWidthBox(mu_sigma, Tf,
         print 'saving to ', file_name
         savefig(file_name)
     
+def PriorPtsDensityBox(mu_sigma, Tf, 
+                       alpha_bounds = (-2,2), resimulate=False,
+                       tau_min = 0.333, tau_max = 3.0 , Ntaus = 32):
+    
+    '''Chech whether the # of pts making up a tau-prior is important or whether 
+    just accounting for the spread (in one of several ways) is sufficient
+    
+    CONCLUSION:  
+    '''
+     
+    'Specify Priors:'
+    pE = TauParticleEnsemble(Ntaus);
+    pE.setLocationsUsingRange(tau_min, tau_max)
+    
+    mu, std  = pE.ensembleLogMeanVar(); 
+    std = sqrt(pE.ensembleVar())
+    
+    pEsparse = TauParticleEnsemble(Ntaus/4);
+    pEsparse.setLocationsUsingRange(tau_min, tau_max)
+    
+        
+    tau_chars_list = [ pE.taus, 
+                       pEsparse.taus,
+                       [tau_min ,    tau_max],
+                       exp(array([mu-std, mu+std])),
+                       exp(array([mu-2*std, mu+2*std]))  ]
+    prior_tags = [ 'full_prior_%d'%Ntaus,
+                  'full_prior_%d'%(Ntaus/4),
+                   'full_spread_prior', 
+                   'CIs1stds_2pt_prior',
+                   'CIs2stds_2pt_prior' ] 
+    
+    print tau_chars_list
+    
+    'Main Simulation/Visualization Loop:'
+    for tdx, (tau_chars, prior_tag) in enumerate(zip(tau_chars_list, 
+                                                     prior_tags)):
+        
+        print tdx,':', prior_tag, '\t', tau_chars
+        tau_char_weights = ones_like(tau_chars)/len(tau_chars); 
+        print sum(tau_char_weights )
+     
+        if resimulate:
+            lSolver, fs, ps, cs_iterates, J_iterates = \
+                calculateOptimalControl(tau_chars, tau_char_weights,
+                                        mu_sigma,
+                                        Tf=Tf ,  
+                                        alpha_bounds=alpha_bounds, 
+                                        visualize=True)
+    
+    
+            
+            (FBKSolution(tau_chars, tau_char_weights,
+                         mu_sigma, alpha_bounds,
+                         lSolver,
+                         fs, ps,
+                         cs_iterates, J_iterates)).save( prior_tag )
+                         
+        visualizeRegimes(tau_chars, mu_sigma, Tf, soln_name = prior_tag)
          
                
 def OptControlProfiler(mu_sigma = [0.,1.],
@@ -2155,27 +2335,34 @@ if __name__ == '__main__':
 #    NtausBox(mu_sigma, Tf, alpha_bounds=alpha_bounds,
 #             resimulate=False);
 
-    ''' check if there is a difference between a wide spread prior vs. a concentrated prior:
-      there is'''
-#    Tf = 5;
-#    PriorSpreadBox(mu_sigma, Tf, alpha_bounds, resimulate=True)
+    ''' check if there is a difference between a wide spread prior vs.
+     a concentrated prior for the Optimal Stimulation:
+      Conclusion: There is!'''
+#    PriorSpreadBox(mu_sigma, Tf, alpha_bounds, resimulate=False)
 #
 #    PriorSpreadWidthBox(mu_sigma, Tf, alpha_bounds,
 #                        Npts_in_prior=4,
 #                         resimulate=True) #, fig_name = 'Effect_of_prior_spread')
     
+    ''' Check if you need to keep track of the full prior (Npts), or just some 
+    notion of the prior spread...
+    
+    CONCLUSION: Using the full spread or the plus/minus nCIs, is not the same as 
+    using the full particle ensemble...'''
+#    PriorPtsDensityBox(mu_sigma, Tf, alpha_bounds, resimulate=False)
+    
+    'Check if optimizer ICs make a difference:'
+    OptimizerICs(mu_sigma)
+    
     '''move the forward computation to C:'''
-#    PyVsCDriver(tau_chars, mu_sigma, Tf)
+#    PyVsCDriver(tau_chars,
+#                 mu_sigma, 5.0)
 #    CVsCDriver( )
     
     
-    '''move the backward computation to C:'''
-#    CVsCDriver( )
-#    PyVsCDriver(tau_chars, mu_sigma, Tf)
-
 
     '''Profile the bottlenecks:'''
-#    OptControlProfiler();
+#    OptControlProfiler( recompute = True );
     
     show()
     

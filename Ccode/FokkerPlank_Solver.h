@@ -40,10 +40,16 @@ void _fortetError(const double * ts, const int num_steps, double * Is, const int
 				double *error);
 
 void _solve_f(const double mutausigma[3 ],
-		const double * alphas,
-		      const double * ts, const int num_steps,
-		      const double * xs, const int num_nodes,
-		      double ** fs);
+			const double * alphas,
+		  const double * ts, const int num_steps,
+		  const double * xs, const int num_nodes,
+		  double ** fs);
+void _solve_p(const double mutausigma[3 ],
+			const double * alphas,
+		  const double * ts, const int num_steps,
+		  const double * xs, const int num_nodes,
+		  double *bcs,
+		  double ** ps);
 
 //HELPER FUNCTIONS:
 void setICs(double *** Fs, const double * phis, const int N_phi, const double * xs, const int num_nodes);

@@ -7,7 +7,8 @@
 
 
 /* to valgrind this program do:
- *   valgrind --leak-check=yes ./Driver (no args are needed, but if o/w put  arg1 arg2 here
+ *   valgrind --leak-check=yes ./Driver (no args are needed, but if
+ *   o/w put  arg1 arg2 here)
  */
 
 #include <stdio.h>
@@ -206,12 +207,51 @@ void solve_f_g_Harness(){
 	}
 }
 
+void solve_p_Driver(){
+		const int num_steps = 2;
+
+		double mutausigma[3] = {0., 2e5, 1.};
+		double alphas[2] = {0., 0.};
+		double ts[2] = {0, 1};
+		double bcs[2] = {.2, .9};
+	//	const int num_nodes = 6;
+	//	double xs[6] = {-.25, .0, .25, .5, .75 ,1};
+		const int num_nodes = 4;
+		double xs[4] = {-.5, .0,  .5 , 1};
+
+		//Raw data for the return array:
+		double (** ps);
+
+		//  Allocate a 2D Array  (contiguously!)!!!
+		ps = malloc(num_steps * sizeof(double *));
+		ps[0] = malloc(num_steps*num_nodes * sizeof(double));
+		for(size_t idx = 1; idx < num_steps; ++idx) {
+			ps[idx] = ps[0] + idx * num_nodes;
+		}
+
+		_solve_p(mutausigma, alphas,
+				ts, num_steps,
+				xs, num_nodes,
+			    bcs,
+			    ps);
+
+		for (int tdx = 0; tdx < num_steps; ++tdx) {
+			for (int xdx = 0; xdx < num_nodes; ++xdx) {
+				printf("%.2f \t", ps[tdx][xdx]);
+			}
+			printf(" |\n");
+		}
+
+		printf("DONE\n");
+	}
 
 int main(int argc, char **argv) {
 //	solveFDriver();
 
 //	solve_f_Driver();
-	solve_f_g_Harness();
+//	solve_f_g_Harness();
+
+	solve_p_Driver();
 
 }
 

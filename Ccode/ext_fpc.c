@@ -295,7 +295,106 @@ static PyObject * FortetError(PyObject *self, PyObject *args) {
 /* p solve */
 static PyObject * solve_p(PyObject *self, PyObject *args) {
 	//	INPUT:
+	// The Python (array) 'objects' passed in:
+	PyArrayObject *Params, *A, *T, *X , *BC;
+	/* These correspond to the mutausigma values, the alphas values,
+	   the time pts and the space pts and the BCs */
+	int num_steps, num_nodes;
+	double *mutausigma, *alphas, *ts, *xs, *bcs;
 
+	// WORKING VARIABLES:
+	//Raw data for the return array:
+	double (** ps);
+
+	//OUTPUT:
+	//RETURN Obj:
+	const int N_dims_output = 2;
+	npy_intp a_dims[N_dims_output];
+	PyArrayObject * returnObj;
+
+//	printf(" ext_fpc:solve_p  Entered module\n");
+	/* arguments: constraints:*/
+	if (!PyArg_ParseTuple(args, "O!O!O!O!O!:solve_p",
+							&PyArray_Type, &Params,
+							&PyArray_Type, &A,
+							&PyArray_Type, &T,
+							&PyArray_Type, &X,
+							&PyArray_Type, &BC) ) {
+		printf("PyArg failed \n");
+		return NULL;
+	}
+	NDIM_CHECK(Params, 1); TYPE_CHECK(Params, PyArray_DOUBLE);
+	NDIM_CHECK(A, 1); TYPE_CHECK(A, PyArray_DOUBLE);
+	NDIM_CHECK(T, 1); TYPE_CHECK(T, PyArray_DOUBLE);
+	NDIM_CHECK(X, 1); TYPE_CHECK(X, PyArray_DOUBLE);
+	NDIM_CHECK(BC, 1); TYPE_CHECK(X, PyArray_DOUBLE);
+
+	num_steps = (int)T->dimensions[0];  //
+	num_nodes = (int)X->dimensions[0];  //
+
+	mutausigma = (double *) Params->data;
+	alphas = (double * )A->data;
+	ts =   (double *) T->data;
+	xs =   (double *) X->data;
+	bcs = (double * ) BC->data;
+
+	//  Allocate a 2D Array  (contiguously!)!!!
+	//TODO: put in a function
+	ps = malloc(num_steps * sizeof(double *));
+	if (NULL == ps){
+		printf("Ooops ps was not allocated");
+		return NULL;
+	}
+	ps[0] = malloc(num_steps*num_nodes * sizeof(double));
+	if (NULL == ps[0]){
+		printf("Ooops fs[0] was not allocated");
+		return NULL;
+	}
+	for(size_t idx = 1; idx < num_steps; ++idx) {
+		ps[idx] = ps[0] + idx * num_nodes;
+	}
+	//	//MAIN CALL:
+	_solve_p(mutausigma, alphas,
+			ts, num_steps,
+			xs, num_nodes,
+			bcs,
+			ps);
+
+
+	//now return to Python:
+	//remember to transpose p:
+	a_dims[0] = num_nodes;
+	a_dims[1] = num_steps;
+
+	returnObj = (PyArrayObject *) PyArray_ZEROS(N_dims_output, a_dims, PyArray_DOUBLE, 0);
+	if(NULL == returnObj){
+		printf("creating %d  x %d array failed\n",
+				(int)a_dims[0], (int)a_dims[1] );
+		return NULL; /* PyArray_FromDims raises an exception */
+	}
+
+	//Assign working memory array to returnObj->data
+	//You can rearrange the array here (permute dimensions),
+	// so that the compute (working) array and the return array may be permuted vis-a-vis each other as the API requires
+	// We do this here to fit the (wrong) way it was originally done in Python vs[x_idx, t_idx];
+	double * p_jk;
+	for (int t_idx = 0; t_idx < num_steps; ++t_idx) {
+		for (int x_idx = 0; x_idx < num_nodes; ++x_idx) {
+		//get pointer to A->data (using A->strides!! (very useful)
+			p_jk = (double *)(returnObj->data
+									+ x_idx*returnObj->strides[0]
+									+ t_idx*returnObj->strides[1]);
+			*p_jk = ps[t_idx][x_idx];
+		}
+	}
+
+
+	//CLEAN UP AFTER YOURSELF!!! (for every malloc there must be a free)
+	free( (void *) ps[0] );
+	free( (void *) ps );
+
+	//return
+	return PyArray_Return(returnObj);
 }
 
 /* f solve */
@@ -363,8 +462,6 @@ static PyObject * solve_f(PyObject *self, PyObject *args) {
 			xs, num_nodes,
 			 fs);
 
-
-
 	//now return to Python:
 	//remember to transpose f:
 	a_dims[0] = num_nodes;
@@ -413,13 +510,15 @@ static char FortetError_solve_doc[] = \
   "rhs = FortetError(abgthphi, ts, Is) // The sample error of the Fortet Equation for fixed phi";
 static char solve_f_doc[] =\
   "fs = solve_f(mutausigma, alphas, ts, xs) // calculate the f-p density soln corresponding to params + control + ts + xs";
-
+static char solve_p_doc[] =\
+		"ps = solve_p(...) // calculate the backward(adjoint) of some equation with some bcs";
 static char module_doc[] = \
   "module ext_fpc:\n\
    Fs = solveFP(abgt, phis, ts, xs) //Calculates the F-P solution corresponding to the structural parameters in abgt on a grid of phis, ts, xs \n\
    Ss = simulateSDE(abgt, N_spikes, dt) // Calculate N_spikes from a sinusoidal LIF \n\
    rhs = fortetRHS(ts, Is) // Calculate the Right-hand side of the fortet equation  \n\
    fs = solve_f(mutausigma, alphas, ts, xs) // calculate the f-p density\
+   ps = solve_p(...)\
   ";
 
 /* 
@@ -446,6 +545,10 @@ static PyMethodDef ext_fpc_methods[] = {
 	solve_f,
 	METH_VARARGS,
 	solve_f_doc},
+	{"solve_p",
+	solve_p,
+	METH_VARARGS,
+	solve_p_doc},
    // in general {"python name", cname, METH_VARARGS (usually), doc string if you want it}
    {NULL, NULL}     /* required ending of the method table */
 };

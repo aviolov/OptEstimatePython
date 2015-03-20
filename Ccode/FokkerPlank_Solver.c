@@ -306,7 +306,7 @@ void setBCs(double *** Fs, const double * phis, const int N_phi, const double * 
 
 
 
-void _solve_f(const double mutausigma[3 ],
+void _solve_f(const double mutausigma[3],
 			  const double * alphas,
 		      const double * ts, const int num_steps,
 		      const double * xs, const int num_nodes,
@@ -355,10 +355,10 @@ void _solve_f(const double mutausigma[3 ],
 		fs[tk][num_active_nodes] = 0.0;
 	}
 	//set ICs:
-	const double IC_WIDTH = 0.01;
+	const double IC_WIDTH = 0.1; //  this is copiied from the python code and is a MAGIC CONSTANT
 	double norm_const = 0.0;
 	for (int xdx = 0; xdx < num_active_nodes; ++xdx) {
-		fs[0][xdx] =  exp(-xs[xdx]*xs[xdx] /  (2.*IC_WIDTH*IC_WIDTH) );
+		fs[0][xdx] =  exp(-xs[xdx]*xs[xdx] /  (IC_WIDTH*IC_WIDTH) );
 		norm_const+= fs[0][xdx];
 	}
 	norm_const*=dx;
@@ -409,7 +409,7 @@ void _solve_f(const double mutausigma[3 ],
 		    M_u[xdx] = -.5*(d_off - u_r);
 //		    printf("%.4f,%.4f,%.4f : %.4f\n", M_l[xdx], M_c[xdx], M_u[xdx], RHS[xdx]);
 		}
-		//Lower BCs (homogeneous Neumann:
+		//Lower BCs (homogeneous Robin):
 		//D f' - Uf = 0
 		M_c[0] = -U_current[0] - D / dx;  M_u[0] =  D / dx;
 
@@ -434,8 +434,126 @@ void _solve_f(const double mutausigma[3 ],
 	free(f_prev); free(f_current); free(U_prev); free(U_current);
 }
 
-void _solve_p(){
+void _solve_p(const double mutausigma[3],
+			const double * alphas,
+		  const double * ts, const int num_steps,
+		  const double * xs, const int num_nodes,
+		  double *bcs,
+		  double ** ps){
+	/* we use a C-N method to backward solve a basic
+		backward Kolmogorov LIF-based hitting time problem:
+	 *
+	 * 			D p_xx +  U p_x = -p_t
+	 * */
 
+	//RIP PARAMS:
+	double mu, tauchar, sigma;
+	double dt, dx, dx_squared;
+	mu = mutausigma[0]; tauchar = mutausigma[1]; sigma=mutausigma[2];
+	dt = ts[1] - ts[0];
+	dx = xs[1] - xs[0];
+	dx_squared = dx*dx;
+
+	// Linear System Variables:
+	size_t num_active_nodes = num_nodes - 1;
+//	size_t num_inner_nodes = num_nodes - 2;
+
+	double D = sigma*sigma/2.0;
+	double u_c, d_on, d_off;
+	d_on  = dt * D / dx_squared;
+	d_off = dt * D / dx_squared;
+	//u is allocated on the fly in the time / space loop
+	 //AllOCATE MASS MTX (diagonals):
+	double * M_l, *M_c, *M_u, *RHS;//lower, central and upper diagonal respectively and the RHS vector
+	M_l = (double *)malloc(num_nodes*sizeof(double));
+	M_c = (double *)malloc(num_nodes*sizeof(double));
+	M_u = (double *)malloc(num_nodes*sizeof(double));
+	RHS = (double *)malloc(num_nodes*sizeof(double));
+
+	//Declare (and allocate) loop variables:
+	double * p_next, * p_current;
+	double alpha_next, alpha_current;
+	double *U_next, *U_current;
+	p_next    = malloc(num_nodes*sizeof(double));
+	p_current = malloc(num_nodes*sizeof(double));
+	U_next = malloc(num_nodes*sizeof(double));
+	U_current = malloc(num_nodes*sizeof(double));
+
+	//set (Upper) BCs (homogeneous):
+	for (int tk = 0; tk < num_steps; ++tk) {
+		ps[tk][num_nodes-1] = bcs[tk];
+	}
+	//set TCs:
+	for (int xk = 0; xk < num_nodes; ++xk) {
+		ps[num_steps-1][xk] = 0.0;
+	}
+	ps[num_steps-1][num_nodes-1] = 0.;
+
+	// lower BCs:
+	RHS[0] = 0.0;
+	int tk_next;
+	double sde_field;
+	//MAIN LOOP:
+	for (int tk = num_steps-2; tk >= 0 ; --tk) {
+		tk_next = tk+1;
+		alpha_next = alphas[tk_next];
+		alpha_current = alphas[tk];
+		//rip next solution:
+		for (int xdx = 0; xdx < num_nodes; ++xdx) {
+			p_next[xdx] = ps[tk_next][xdx];
+		}
+		//Calculate U:
+		for (int xidx = 0; xidx < num_nodes; ++xidx) {
+			// U = ( alpha_prev + (mu - xs / tau_char) )
+			sde_field  = (mu - xs[xidx])/tauchar;
+			U_next[xidx]    = alpha_next    + sde_field;
+			U_current[xidx] = alpha_current + sde_field;
+		}
+		//Form RHS:
+		for (int xidx = 1; xidx < num_active_nodes; ++xidx) {
+			RHS[xidx] = p_next[xidx] +
+						dt*0.5* ( D * ( p_next[xidx+1] - 2.*p_next[xidx] + p_next[xidx-1]) / dx_squared +
+								  U_next[xidx]*( p_next[xidx+1] - p_next[xidx-1] ) / (2.0 * dx) );
+		}
+
+		//Form M: i.e  M_l, M_c, M_u
+		//set inner matrix entries: xidx starts at 1:
+		for (int xdx = 1; xdx < num_active_nodes; ++xdx) {
+			u_c  = dt * U_current[xdx] / (2.*dx);
+			//Lower diagonal: Carefully read the Thomas Algo specs (it only uses the values from M_l[1] onwards !!!
+			M_l[xdx] = -.5*(d_off - u_c);
+			//Central diagonal
+			M_c[xdx] = 1. + d_on ;
+			//Upper diagonal: Carefully read the THomas Algo index specs!!!
+			M_u[xdx] = -.5*(d_off + u_c);
+//		    printf("%.4f,%.4f,%.4f : %.4f\n", M_l[xdx], M_c[xdx], M_u[xdx], RHS[xdx]);
+		}
+		//Lower BCs (homogeneous Neumann):
+		//p' = 0
+		M_c[0] = -1.0;  M_u[0] = 1.0;
+
+		//Upper BCs:
+		M_c[num_nodes-1] = 1.0; M_l[num_nodes-1] = 0.;
+		RHS[num_nodes-1] = bcs[tk];
+
+		//Thomas Solve it:
+		thomasSolve(num_nodes,
+					M_l, M_c, M_u,
+					RHS, p_current);
+
+		//populate the solution field:
+		for (int xidx = 0; xidx < num_nodes; ++xidx) {
+			// TODO pass fs[tk] directly to the Thomas Solver//
+			//i.e. pass fs[tk][0] or &fs[tk][0] or vs[tk*num_nodes]
+
+			ps[tk][xidx] = p_current[xidx];
+		}
+	}//END-Reverse TIME LOOP
+
+	// clean up:
+	free(M_l); free(M_c); free(M_u);
+	free(RHS);
+	free(p_next); free(p_current); free(U_next); free(U_current);
 }
 
 
