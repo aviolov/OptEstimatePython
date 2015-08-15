@@ -2,7 +2,10 @@
 """
 @author: alex
 """
+
 from __future__ import division
+
+
 
 from numpy import *
 from numpy.random import randn, seed  
@@ -151,54 +154,7 @@ class SimulationPaths():
 #        return soln 
 
 ##################################################################
-##################################################################
-##################################################################
-   
-def visualizeControls(amax = 1, Tf = 16., xmax = 2.,
-                      fig_name=None):
-    Tbreak = 2.
-    def detControl(t, x):        
-        if mod(t, Tbreak) >= Tbreak/2.:
-            return amax
-        else:
-            return -amax
-    def fbControl(t,x):
-        return amax* sign(x);
-    
-    
-    
-    ts = arange(.0, Tf, .1);
-    xs = arange(-xmax, xmax, .1)
-    
-    detCs = array([detControl(t, .0) for t in ts]);
-    fbCs = fbControl(ts, xs);
-    
-    # VISUALIZE:
-    label_font_size = 24
-    xlabel_font_size = 32
-    
-    figure();
-    subplot(121)
-    title('Deterministic-in time Bang-Bang')
-    plot(ts, detCs); 
-    hlines(0, ts[0], ts[-1], colors='k')
-    ylabel(r'$\alpha_t$', fontsize = xlabel_font_size)
-    xlabel(r'$t$', fontsize = xlabel_font_size)
-    ylim((-1.1*amax*array([-1,1])))
-    
-    subplot(122) 
-    title('Feedback  Bang-Bang')
-    plot(xs, fbCs); 
-    hlines(0, xs[0], xs[-1], colors='k')
-    xlabel(r'$X_t$', fontsize = xlabel_font_size)
-    ylim((-1.1*amax*array([-1,1])))
-        
 
-    if None != fig_name:
-        lfig_name = os.path.join(FIGS_DIR,
-                                  fig_name + '.pdf')
-        print 'saving to ', lfig_name
-        savefig(lfig_name)
    
      
 def visualizePaths(Nblocks , 
@@ -609,7 +565,9 @@ def BetaSigmaSweepHarness(regenerate_paths = True,
         
     print 'time_taken', time.clock() - start;   
         
-if __name__ == '__main__':       
+if __name__ == '__main__':    
+    
+    raise Exception('This File analytics are deprecated')   
     from pylab import *  
     
     Nblocks = 100; 
@@ -617,9 +575,9 @@ if __name__ == '__main__':
     simPs   = SimulationParams(tau_char = 1.)
     
         
-#    visualizeControls(Tf = 16, fig_name='Fb_vs_det_control_illustrate');
+    visualizeControls(Tf = 16, fig_name='Fb_vs_det_control_illustrate');
 
-#    '''Simulate N passage times'''
+    '''Simulate N passage times'''
 #    GeneratePathsHarness(Nblocks = Nblocks, 
 #                         Nhits = Nhits,
 #                         simPs = simPs)

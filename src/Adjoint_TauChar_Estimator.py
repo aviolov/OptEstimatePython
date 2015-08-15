@@ -349,7 +349,7 @@ def estimatorEmpricialDistnMatch(simPs, fbkSoln,
 
 #    for alpha_idx in arange(0, len(alphaFs)):
 #    for alpha_idx in arange(0, 2):
-    for alpha_idx in arange(0, 1):
+    for alpha_idx in arange(0, 3):
         alphaF = alphaFs[alpha_idx]
         bdx = 0 
         
@@ -384,7 +384,7 @@ def estimatorEmpricialDistnMatch(simPs, fbkSoln,
                
 #        betas =  2**(linspace(-1,1, 50)) 
 #        betas_sweep =  2**(linspace(-.2,.3, 100))  
-        betas_sweep =   linspace(.95, 1.35, 80)        
+        betas_sweep =   linspace(0.8, 1.25, 45)        
         def beta_nllk(beta): 
             'main call'
             gs_dx = lSolver.solve_hittime_distn_per_parameter(1./beta,
@@ -844,35 +844,43 @@ def postAnalysis(Nblocks, Nhits, simPs,
     ctags = simPaths.alpha_tags
        
 #    VISUALIZE:
-    figure(figsize =(8,10)) ; hold(True)
+    figure(figsize =(8,8)) ; hold(True)
     for adx, x, c_tag, col  in zip( range(len(simPaths.alphas)),
                                    [-1,0 , 1],
                                     ctags,
                                     ['b', 'r', 'g']):
         bs = betaEsts[adx,:]; 
-        scatter(x*ones_like(bs), bs, c = col );
+        scatter(x*ones_like(bs), 1/bs, c = col );
         print c_tag, mean(bs), std(bs)
+    ylabel(r'$\hat{\tau}$', fontsize=xlabel_font_size)
     hlines(1./simPaths.simParams.tau_char, -1, 1);
-    legend(ctags)   
+    legend(ctags)  
+    xlabel('Control Strategy Index');
+    ylim((0.,4))
+    
+    fig_name =  os.path.join(FIGS_DIR, 'miestimates_scatterplot_Nb%d_Ns%d.pdf'%(Nblocks, Nhits))
+    print 'Saving to ', fig_name
+    savefig(fig_name);
     
     #LATEXIFY:
     
     print 'latexifying:'
     
-    latex_string = r'control type & mean($\hat\beta$) & std($\hat\beta$) \\ \hline '
+    latex_string = r'control type & mean($\log ( \hat\tau ) ) & std($ log( \hat\tau) $) \\ \hline '
     
     for adx, x, c_tag, col  in zip( range(len(simPaths.alphas)),
                                    [-1,0 , 1],
                                     ctags,
                                     ['b', 'r', 'g']):
         bs = betaEsts[adx,:]; 
-        scatter(x*ones_like(bs), bs, c = col );
-        latex_string+= r'%s & %.3f & %.2f \\' %(c_tag, mean(bs), std(bs))
+        taus = 1.0/bs;
+        log_taus = log(taus)
+        latex_string+= r'%s & %.3f & %.2f \\' %(c_tag, mean(log_taus ), std(log_taus ) )
         
     print latex_string
         
     latex_filename = os.path.join(FIGS_DIR,
-                                   'beta_hit_time_%d.txt'%(Nhits))    
+                                   'tauchar_hit_time_%d.txt'%(Nhits))    
      
     with open(latex_filename, 'w') as the_file:
         the_file.write(latex_string)
@@ -880,123 +888,121 @@ def postAnalysis(Nblocks, Nhits, simPs,
        
     
     
-  
-    
-def latexifyResults(Npaths = 1000, Tfs = [8, 16,32] ):
-    bEstimates  = {};
-    ctags = []
-    for Tf in Tfs:
-        bEsts = estimateHarness(Tf, Npaths = Npaths);
+#def latexifyResults(Npaths = 1000, Tfs = [8, 16,32] ):
+#    bEstimates  = {};
+#    ctags = []
+#    for Tf in Tfs:
+#        bEsts = estimateHarness(Tf, Npaths = Npaths);
+#        
+#        for ctag, bs in bEsts.iteritems():
+#            bEstimates[(Tf, ctag)] = (mean(bs), std(bs))
+#            
+#        ctags = bEsts.keys();
+#        
+#        
+#    #latexify:
+#    print 'latexifying:'
+#    print '$T_f$:'
+#    for Tf in Tfs:
+#        print ' & %d'%Tf
+#    print r'\\'    
+#    for ctag in ctags:
+#        print ctag, ':'
+#        for Tf in Tfs:  
+#            m,s =  bEstimates[(Tf, ctag)]        
+#            print  ' & (%.2f, %.2f)'%(m,s)    
+#        print r'\\'
+#     
+#
+# 
+#def latexifyBetaSweepResults(Npaths, Tf ,
+#                             tau_chars, sigmas):
+#    from scipy.stats import nanmean, nanstd
+#    
+#    bEstimates  = {};
+#    ctags = []
+#    for tau_char in tau_chars:
+#            for sigma in sigmas:
+#                simPs = SimulationParams(tau_char = tau_char, sigma = sigma)
+#                bEsts = estimateHarness(Tf, Npaths = Npaths, simParams= simPs);
+#        
+#                for ctag, bs in bEsts.iteritems():
+#                    bEstimates[(tau_char, sigma, ctag)] = (nanmean(bs),
+#                                                           nanstd(bs),
+#                                                           sum(isnan(bs)))
+#                ctags = bEsts.keys();  
+#                
+#                  
+#    #LATEXIFY:
+#    
+#    print 'latexifying:'
+#    
+#    latex_string = ''
+#    latex_string+= r'$(\beta_{true}, \sigma)$:'
+#    for tau_char in tau_chars:
+#            for sigma in sigmas:
+#                latex_string += ' & (%.2f,%.2f)'%(1/tau_char, sigma)
+#    latex_string+= r'\\ \hline  '    
+#    for ctag in ctags:
+#        latex_string+= ctag + ':'
+#        for tau_char in tau_chars:
+#            for sigma in sigmas:
+#                m,s,nnan =  bEstimates[(tau_char, sigma, ctag)]        
+##                latex_string+=  ' & (%.2f, %.2f, %d)'%(m,s, nnan)    
+#                latex_string+=  ' & (%.2f, %.2f )'%(m,s)    
+#        latex_string+= r'\\'
+#    
+#    print latex_string
+#        
+#    latex_filename = os.path.join(FIGS_DIR, 'betasigmasweep_tabulate.txt')    
+#    
+#    with open(latex_filename, 'w') as the_file:
+#        the_file.write(latex_string)
+#        print 'Latex written to ', latex_filename
         
-        for ctag, bs in bEsts.iteritems():
-            bEstimates[(Tf, ctag)] = (mean(bs), std(bs))
-            
-        ctags = bEsts.keys();
-        
-        
-    #latexify:
-    print 'latexifying:'
-    print '$T_f$:'
-    for Tf in Tfs:
-        print ' & %d'%Tf
-    print r'\\'    
-    for ctag in ctags:
-        print ctag, ':'
-        for Tf in Tfs:  
-            m,s =  bEstimates[(Tf, ctag)]        
-            print  ' & (%.2f, %.2f)'%(m,s)    
-        print r'\\'
-     
-
- 
-def latexifyBetaSweepResults(Npaths, Tf ,
-                             tau_chars, sigmas):
-    from scipy.stats import nanmean, nanstd
-    
-    bEstimates  = {};
-    ctags = []
-    for tau_char in tau_chars:
-            for sigma in sigmas:
-                simPs = SimulationParams(tau_char = tau_char, sigma = sigma)
-                bEsts = estimateHarness(Tf, Npaths = Npaths, simParams= simPs);
-        
-                for ctag, bs in bEsts.iteritems():
-                    bEstimates[(tau_char, sigma, ctag)] = (nanmean(bs),
-                                                           nanstd(bs),
-                                                           sum(isnan(bs)))
-                ctags = bEsts.keys();  
-                
-                  
-    #LATEXIFY:
-    
-    print 'latexifying:'
-    
-    latex_string = ''
-    latex_string+= r'$(\beta_{true}, \sigma)$:'
-    for tau_char in tau_chars:
-            for sigma in sigmas:
-                latex_string += ' & (%.2f,%.2f)'%(1/tau_char, sigma)
-    latex_string+= r'\\ \hline  '    
-    for ctag in ctags:
-        latex_string+= ctag + ':'
-        for tau_char in tau_chars:
-            for sigma in sigmas:
-                m,s,nnan =  bEstimates[(tau_char, sigma, ctag)]        
-#                latex_string+=  ' & (%.2f, %.2f, %d)'%(m,s, nnan)    
-                latex_string+=  ' & (%.2f, %.2f )'%(m,s)    
-        latex_string+= r'\\'
-    
-    print latex_string
-        
-    latex_filename = os.path.join(FIGS_DIR, 'betasigmasweep_tabulate.txt')    
-    
-    with open(latex_filename, 'w') as the_file:
-        the_file.write(latex_string)
-        print 'Latex written to ', latex_filename
-        
-def BetaSigmaSweepHarness(regenerate_paths = True,
-                          reestimate = False):  
-    ''' we estimate the true beta for different control perturbations for different values 
-    of the 'true beta and sigma'''
-      
-    start = time.clock();
-    Tf = 16;
-    Npaths = 100; 
-    X0 = 2.;
-    
-    tau_chars = [.2, 1 ,5]; sigmas = [.25, 4];
-    
-    '''generate stochastic paths'''
-    if regenerate_paths:
-        for tau_char in tau_chars:
-            for sigma in sigmas:
-                    simPs = SimulationParams(tau_char = tau_char, sigma = sigma) 
-                    GeneratePathsHarness(Tf, Npaths = Npaths,
-                                         x_0 = X0,
-                                          amax = 1., simPs = simPs) 
-    if reestimate:
-        for tau_char in tau_chars:
-            for sigma in sigmas:
-                    simPs = SimulationParams(tau_char = tau_char, sigma = sigma) 
-                    ''' estimate beta'''    
-                    estimateHarness(Tf, Npaths,simParams = simPs)
- 
-    latexifyBetaSweepResults(Npaths, Tf, tau_chars, sigmas);
-        
-    print 'time_taken', time.clock() - start;   
+#def BetaSigmaSweepHarness(regenerate_paths = True,
+#                          reestimate = False):  
+#    ''' we estimate the true beta for different control perturbations for different values 
+#    of the 'true beta and sigma'''
+#      
+#    start = time.clock();
+#    Tf = 16;
+#    Npaths = 100; 
+#    X0 = 2.;
+#    
+#    tau_chars = [.2, 1 ,5]; sigmas = [.25, 4];
+#    
+#    '''generate stochastic paths'''
+#    if regenerate_paths:
+#        for tau_char in tau_chars:
+#            for sigma in sigmas:
+#                    simPs = SimulationParams(tau_char = tau_char, sigma = sigma) 
+#                    GeneratePathsHarness(Tf, Npaths = Npaths,
+#                                         x_0 = X0,
+#                                          amax = 1., simPs = simPs) 
+#    if reestimate:
+#        for tau_char in tau_chars:
+#            for sigma in sigmas:
+#                    simPs = SimulationParams(tau_char = tau_char, sigma = sigma) 
+#                    ''' estimate beta'''    
+#                    estimateHarness(Tf, Npaths,simParams = simPs)
+# 
+#    latexifyBetaSweepResults(Npaths, Tf, tau_chars, sigmas);
+#        
+#    print 'time_taken', time.clock() - start;   
         
         
 if __name__ == '__main__':       
     from pylab import *  
     
     simPs   = SimulationParams(tau_char = 1.)
-    Tf = 5.;
+    Tf = 15.;
     Nblocks = 100; 
     Nhits   = 1000;
     N_all_hits = 1e5;
     
-    'Load OptSoln (functionality test):'
-    fbkSoln = FBKSolution.load(mu_beta_Tf_Ntaus = [simPs.mu, simPs.sigma, Tf, 3])
+    'Load OptSoln:'
+    fbkSoln = FBKSolution.load(mu_beta_Tf_Ntaus = [simPs.mu, simPs.sigma, Tf, 16])
     
     'visualize controls (sanity check)'   
 #    visualizeControls(simPs,
@@ -1005,12 +1011,9 @@ if __name__ == '__main__':
 #                      fig_name='opt_vs_crit_vs_max_control_illustrate');
 
     '''Simulate N passage times'''
-#    NblocksNhitsRearrange(simPs, fbkSoln)
-#    for Nblocks, Nhits in zip((100, 10,1), (1e3, 1e4,1e5)):
-#    for Nblocks, Nhits in zip((  10,1), (  1e4,1e5)):
-#        GeneratePathsHarness(simPs, fbkSoln,
-#                             Nblocks = Nblocks, 
-#                             Nhits = int(Nhits))
+#    GeneratePathsHarness(simPs, fbkSoln,
+#                          Nblocks = Nblocks, 
+#                            Nhits = Nhits)
         
     
     ''' splits the existing set into different blocks x hits compartments'''
@@ -1021,23 +1024,24 @@ if __name__ == '__main__':
 #                   Nblocks = Nblocks, 
 #                   Nhits = Nhits) #fig_name = 'three_pt_prior')
 
+
     '''Inspect the estimator routines for various test cases / convergences:'''
 #    estimatorWorkbench(simPs, fbkSoln)  
   
 
     '''Do the actual parameter estimation''' 
 #    for Nh in array( [1e5] ).astype(int) :
-###    for Nh in array( [1e3, 1e4, 1e5 ]).astype(int): 
-#        Nb = 100000 // Nh;
-#                 
+    for Nh in array( [ 1e2  , 1e3, 1e4, 1e5 ]).astype(int): 
+#    for Nh in array( [1e2 ]).astype(int): 
+        Nb = 100000 // Nh;
+#        'Estimate tau_char:'       
 #        estimateHarness(simPs, fbkSoln,
 #                        Nblocks = Nb, 
 #                        Nhits = Nh) 
-#                
-#        '''visualize and latexify results'''
-#        postAnalysis( Nblocks = Nb, 
-#                        Nhits = Nh, 
-#                        simPs = simPs)
+        '''visualize and latexify results'''
+        postAnalysis( Nblocks = Nb, 
+                        Nhits = Nh, 
+                        simPs = simPs) 
      
 
     '''The sweep through beta /sigma'''

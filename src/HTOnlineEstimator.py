@@ -151,8 +151,12 @@ class HTOnlineEstimator():
                                             self.alpha_bounds  )        
         self.MI_Stimulation_Time = MI_stimulation_time;
         self.miStimulator.init_ts = linspace(0, self.MI_Stimulation_Time, 1000)
-        self.miStimulator.init_alpha = 0.9*self.alpha_bounds[-1]*cos(2*pi*self.miStimulator.init_ts/self.MI_Stimulation_Time);
-        
+#        self.miStimulator.init_alpha = 0.9*self.alpha_bounds[-1]*cos(2*pi*self.miStimulator.init_ts/self.MI_Stimulation_Time);
+        alpha_min  = 0.9*self.alpha_bounds[0];   
+        alpha_max  = 0.9*self.alpha_bounds[-1];  
+        Tf = MI_stimulation_time;
+        init_ts = self.miStimulator.init_ts;
+        self.miStimulator.init_alpha = alpha_min*(init_ts<=2*Tf/3) + alpha_max*(init_ts>2*Tf/3);
         'The random stimulator:'
         self.randStimulator = RandomStimulator(mu_sigma);
     
@@ -653,6 +657,62 @@ def driverBatchEstimate(resimulate = False):
         lEstimator = HTOnlineEstimator.load(save_file_name)
         visualizeEstimation(lEstimator, simPs, fig_name = base_fig_name + experiment_tag);
 
+def driverNarrowExperiment(fig_name = None, resimulate = True):          
+    ''' Run a single experiment for the Online Estimator using N trials and
+        updating the particle ensemble in the process '''
+    simPs = SimulationParams(tau_char = 1.)
+    Ntaus = 32
+    Ntrials = 102
+    seed(Ntrials)
+    
+    experiment_tag ='Nts=%d_Ntrls=%d'%(Ntaus, Ntrials)
+    save_file_name = 'narrow_prior_experiment_%s'%experiment_tag
+    if resimulate:        
+        lEstimator = HTOnlineEstimator(simPs,
+                                        Ntrials = Ntrials,
+                                        Ntaus=Ntaus,
+                                        alpha_bounds = [-2,2],
+                                        start_MIGD_from_rand_stim=False,
+                                        update_stimulation_interval=20,
+                                        init_range = [.66, 1.5])
+    
+        lEstimator.runSingleExperiment( visualize=True )
+#        
+        lEstimator.save(save_file_name)
+        
+    
+    ''' Now reload and visualize'''
+    lEstimator = HTOnlineEstimator.load(save_file_name)
+
+    print 'MI tau locations:\n', lEstimator.miTausMassif['taus'][-1]
+    
+    print 'MI tau weights \n', lEstimator.miTausMassif['weights'][-1]
+    
+    print 'hitting times:\n', array(lEstimator.hitting_times)
+    
+    'visualize ensembles' 
+    visualizeEstimation(lEstimator, simPs, fig_name = fig_name);
+   
+    'visualize control evolution:'
+    tsalphasMassif = lEstimator.miStimulator.ts_aopts_Massif;
+    
+    cs_fig = figure(figsize = (17, 12));   
+    
+    pdx = 0
+    for idx, tsalphas in enumerate(tsalphasMassif ):
+        if mod(idx, 4) == 0:
+            pdx+=1;
+        subplot(2,1,pdx); hold(True);
+        plot(tsalphas[0], tsalphas[1], label='%d'%idx)
+        legend(loc='lower right');
+    xlabel(r'$t$', fontsize = xlabel_font_size)
+    
+    if None == fig_name:
+        return
+    lfig_name = os.path.join(FIGS_DIR,
+                              fig_name + '_controls_evolution.pdf');
+    print 'saving to ', lfig_name 
+    cs_fig.savefig(lfig_name)  
 
 def visualizeEstimation(lEstimator, simPs, fig_name=None):  
     print 'MI-Opt log-Ensemble = ' + lEstimator.miEnsemble.ensembleLogMeanStdString();
@@ -699,7 +759,7 @@ def visualizeEstimation(lEstimator, simPs, fig_name=None):
 def visualizeAggregatedBatch(fig_name = 'aggregated_belief_distn'):
     Ntaus = 32;
     simPs = SimulationParams();
-    Ntrials_list = arange(495, 510)
+    Ntrials_list = arange(495, 511)
     print Ntrials_list
     
     base_fig_name = 'single_experiment_example'
@@ -776,6 +836,10 @@ if __name__ == '__main__':
 #    driverBatchEstimate( )
     
     ''' visualize aggregated belief'''
-    visualizeAggregatedBatch()
+#    visualizeAggregatedBatch()
+
+    ''' narrow prior estimate'''
+    driverNarrowExperiment()
+    
         
     show();
