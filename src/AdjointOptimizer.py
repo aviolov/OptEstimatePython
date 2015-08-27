@@ -1072,77 +1072,6 @@ def sweepSwitchpoint(tau_chars,
         savefig(fig_name, dpi=300) 
         
 
-def OptimizerICs(mu_sigma, Tf=12,
-                  alpha_bounds = (-2,2),
-                   resimulate=True):
-    
-    '''Chech whether starting the optiizer in different ICs result in the same final Opt Control
-    CONCLUSION: Yep...!!!
-    '''
-    Ntaus = 4
-    tau_chars_list = [ linspace(0.25, 4.0, Ntaus), 
-                       linspace(0.5, 2.0, Ntaus),
-                       linspace(0.8,1.25, Ntaus)]
-    prior_tags = [ 'wide_prior', 'medium_prior', 'concentrated_prior'] 
-    
-    tau_chars_list = tau_chars_list[ 2:   ]
-    prior_tags = prior_tags[2:  ] 
-    
-#    tau_chars_dict = dict(zip(tau_chars_list,  prior_tags));
-    alpha_min  = 0.8*alpha_bounds[0];     
-    alpha_max  = 0.8*alpha_bounds[-1];  
-    init_ts = linspace(0, Tf, 100);
-    init_ts_cs_dict = {
-#                       'bangbang2': [init_ts,  alpha_min*(init_ts<=Tf/3) + alpha_max*(init_ts>Tf/3)],
-                       'bangbang3': [init_ts,  alpha_min*(init_ts<=2*Tf/3) + alpha_max*(init_ts>2*Tf/3)],
-#                       'linear': [init_ts,  (alpha_max-alpha_min)* (init_ts/Tf ) + alpha_min ], #'zero': [init_ts, zeros_like(init_ts)], #'zero': [init_ts, zeros_like(init_ts)],
-#                       'tanh': [init_ts,  alpha_max*tanh(init_ts - Tf/2) ], #'zero': [init_ts, zeros_like(init_ts)], #'zero': [init_ts, zeros_like(init_ts)],
-                       'cos': [init_ts,  alpha_max*cos(2*pi*init_ts/Tf)]}
-                       # 'multicos': [init_ts, 0.5*alpha_max*cos(2*pi*init_ts/Tf)]}
-    
-    'MAIN LOOP:'
-    for tdx, (tau_chars, prior_tag) in enumerate(zip(tau_chars_list, 
-                                                     prior_tags)):
-        
-        print tdx,':', prior_tag, '\t', tau_chars[0], tau_chars[-1]
-        tau_char_weights = ones_like(tau_chars)/len(tau_chars); 
-        
-        resultsDict = {};
-        
-        for init_tag, init_ts_cs in init_ts_cs_dict.iteritems():
-            soln_tag = prior_tag + init_tag;
-             
-            if resimulate:
-                'Solve'
-                lSolver, fs, ps, cs_iterates, J_iterates = \
-                    calculateOptimalControl(tau_chars, tau_char_weights,
-                                            mu_sigma,
-                                            Tf=Tf ,  
-                                            alpha_bounds=alpha_bounds,
-                                            initial_ts_cs = init_ts_cs, 
-                                            visualize=False)
-    
-                'Save'
-                (FBKSolution(tau_chars, tau_char_weights,
-                         mu_sigma, alpha_bounds,
-                         lSolver,
-                         fs, ps,
-                         cs_iterates, J_iterates)).save( soln_tag )
-                         
-            visualizeRegimes(tau_chars, mu_sigma, Tf, soln_name = soln_tag)            
-            resultsDict[init_tag] =  FBKSolution.load( soln_tag )
-        
-        'Visualize per prior:'
-        figure(figsize=(17,12))
-        for init_tag, fbkSoln in resultsDict.iteritems():
-            subplot(211); hold(True)
-            plot(fbkSoln._Solver._ts, fbkSoln._cs_iterates[-1], label=init_tag)
-            legend(loc='lower right');
-            subplot(212); hold(True);
-            plot(-array(fbkSoln._J_iterates), 'x-', label=init_tag);
-            legend();
-            print fbkSoln._J_iterates, init_tag
-        title(prior_tag);
     
 def OptControlProfiler(mu_sigma = [0.,1.],
                        Tf = 2., 
@@ -1179,10 +1108,10 @@ def OptControlProfiler(mu_sigma = [0.,1.],
 
 def NtausBox(mu_sigma, Tf, 
              alpha_bounds = (-2,2),
-              resimulate=False, fig_name = 'NumberOfTausEffect'):
+             resimulate=False, fig_name = 'NumberOfTausEffect'):
     tau_upper =  2 + log(sqrt(3/2))
     
-    tau_chars_list = [[.5, 2],
+    tau_chars_list = [[0.5, 2],
                       [1./tau_upper, 1., tau_upper ] ]
    
     optControls = {}; ts = {};
@@ -1199,10 +1128,10 @@ def NtausBox(mu_sigma, Tf,
                       Tf=Tf,
                       visualize_decsent = False);
                       
-#        'Visualize Regimes'
-#        visualizeRegimes(tau_chars,
-#                         mu_sigma,
-#                         Tf)#                       fig_name= 'GradientAscent_Nt%d'%len(tau_chars) )#,  
+        'Visualize Regimes'
+        visualizeRegimes(tau_chars,
+                         mu_sigma,
+                         Tf)  # fig_name= 'GradientAscent_Nt%d'%len(tau_chars) )#,  
 
         fbkSoln = FBKSolution.load(mu_beta_Tf_Ntaus = mu_sigma + [Tf] + [len(tau_chars)])
         
@@ -1245,8 +1174,7 @@ def NtausBox(mu_sigma, Tf,
         lfig_name = os.path.join(FIGS_DIR, fig_name + '.pdf')
         print 'saving to ', lfig_name
         solnfig.savefig(lfig_name, dpi=300)       
-                    
-            
+                              
      
 def PriorSpreadBox(mu_sigma, Tf, 
                    alpha_bounds = (-2,2), resimulate=False,
@@ -1285,7 +1213,7 @@ def PriorSpreadBox(mu_sigma, Tf,
                          Tf,
                          soln_name = soln_name)#                       fig_name= 'GradientAscent_Nt%d'%len(tau_chars) )#,  
 
-        fbkSoln = FBKSolution.load(mu_beta_Tf_Ntaus = mu_sigma + [Tf] + [len(tau_chars)])
+        fbkSoln = FBKSolution.load(soln_name)
         
         ts[prior_tag] = fbkSoln._Solver._ts;
         optControls[prior_tag] =   fbkSoln._cs_iterates[-1] 
@@ -1328,7 +1256,150 @@ def PriorSpreadBox(mu_sigma, Tf,
         solnfig.savefig(lfig_name, dpi=300)       
            
     
+
+def OptimizerICsBox(mu_sigma, Tf=12,
+                  alpha_bounds = (-2,2),
+                   resimulate=True):
+    
+    '''Check whether starting the optiizer in different ICs result in the same final Opt Control
+    CONCLUSION: Yep...!!!
+    '''
+    Ntaus = 2
+    tau_chars_list = [ linspace(0.25, 4.0, Ntaus), 
+                       linspace(0.5, 2.0, Ntaus),
+                       linspace(0.8,1.25, Ntaus)]
+    prior_tags = [ 'wide_prior', 'medium_prior', 'concentrated_prior'] 
+    
+#    tau_chars_list = tau_chars_list[ 2:   ]
+#    prior_tags = prior_tags[2:  ] 
+    
+#    tau_chars_dict = dict(zip(tau_chars_list,  prior_tags));
+    alpha_min  = 0.9*alpha_bounds[0];     
+    alpha_max  = 0.9*alpha_bounds[-1];  
+    init_ts = linspace(0, Tf, 100);
+    init_ts_cs_dict = {'zero' : [init_ts, zeros_like(init_ts)],
+                       'linear': [init_ts,  (alpha_max-alpha_min)* (init_ts/Tf ) + alpha_min ], #'zero': [init_ts, zeros_like(init_ts)], #'zero': [init_ts, zeros_like(init_ts)],
+                       'cos': [init_ts,  alpha_max*cos(2*pi*init_ts/Tf)]} 
+    
+    'MAIN LOOP:'
+    for tdx, (tau_chars, prior_tag) in enumerate(zip(tau_chars_list, 
+                                                     prior_tags)):
         
+        print tdx,':', prior_tag, '\t', tau_chars[0], tau_chars[-1]
+        tau_char_weights = ones_like(tau_chars)/len(tau_chars); 
+        
+        resultsDict = {};
+        
+        for init_tag, init_ts_cs in init_ts_cs_dict.iteritems():
+            soln_tag = prior_tag + init_tag;
+             
+            if resimulate:
+                'Solve'
+                lSolver, fs, ps, cs_iterates, J_iterates = \
+                    calculateOptimalControl(tau_chars, tau_char_weights,
+                                            mu_sigma,
+                                            Tf=Tf ,  
+                                            alpha_bounds=alpha_bounds,
+                                            initial_ts_cs = init_ts_cs, 
+                                            visualize=False)
+    
+                'Save'
+                (FBKSolution(tau_chars, tau_char_weights,
+                         mu_sigma, alpha_bounds,
+                         lSolver,
+                         fs, ps,
+                         cs_iterates, J_iterates)).save( soln_tag )
+
+                
+                         
+            visualizeRegimes(tau_chars, mu_sigma, Tf, soln_name = soln_tag)            
+            resultsDict[init_tag] =  FBKSolution.load( soln_tag )
+        
+        'Visualize per prior:'
+        figure(figsize=(17,12))
+        for init_tag, fbkSoln in resultsDict.iteritems():
+            subplot(211); hold(True)
+            plot(fbkSoln._Solver._ts,
+                  fbkSoln._cs_iterates[-1], label=init_tag)
+            legend(loc='lower right');
+            subplot(212); hold(True);
+            plot(-array(fbkSoln._J_iterates), 'x-', label=init_tag);
+            legend();
+            print fbkSoln._J_iterates, init_tag
+        title(prior_tag);
+        
+     
+
+def KnownParametersBox( Tf=12,
+                        alpha_bounds = (-2,2),
+                   resimulate=True):
+    
+    '''Check whether varying mu,sigma has a significant impact on the 
+    optimal control 
+    CONCLUSION: Well, it only works for some mu, sigmas (the closer to 0,1 the better...!!!
+    '''
+    Ntaus = 2
+    tau_chars  = linspace(0.5, 2.0, Ntaus)
+    tau_char_weights = ones_like(tau_chars)/len(tau_chars); 
+    
+    mu_sigma_list = [(-.5, 1), (0.1,1), (1,1),
+                     (0,  .3), (0, 0.9), (0,1.5) ]
+                       
+    param_tags = ['munegative', 'musmallperturb', 'muthresh',
+                  'lownoise', 'sigmasmallperturb', 'highnoise']  
+    
+    alpha_min  = 0.9*alpha_bounds[0];     
+    alpha_max  = 0.9*alpha_bounds[-1];  
+    init_ts_cs = [linspace(0, Tf, 100),
+                   (alpha_max-alpha_min)* (linspace(0, Tf, 100)/Tf ) + alpha_min ] 
+    
+    'MAIN LOOP:'
+    resultsDict = {};
+    for tdx, (mu_sigma, param_tag) in enumerate(zip(mu_sigma_list, 
+                                                     param_tags)):
+        
+        print tdx,':', param_tag, '\t', mu_sigma[0], mu_sigma[-1]
+        
+         
+        soln_tag = param_tag ;
+         
+        if resimulate:
+            'Solve'
+            lSolver, fs, ps, cs_iterates, J_iterates = \
+                calculateOptimalControl(tau_chars, tau_char_weights,
+                                        mu_sigma,
+                                        Tf=Tf ,  
+                                        alpha_bounds=alpha_bounds,
+                                        initial_ts_cs = init_ts_cs, 
+                                        visualize=False)
+
+            'Save'
+            (FBKSolution(tau_chars, tau_char_weights,
+                     mu_sigma, alpha_bounds,
+                     lSolver,
+                     fs, ps,
+                     cs_iterates, J_iterates)).save( soln_tag )
+
+#        visualizeRegimes(tau_chars, mu_sigma, Tf, soln_name = soln_tag)            
+        resultsDict[param_tag] =  FBKSolution.load( soln_tag )
+            
+                     
+        
+    'Visualize per prior:'
+    figure(figsize=(17,12))
+    for tag, fbkSoln in resultsDict.iteritems():
+        subplot(211); hold(True)
+        plot(fbkSoln._Solver._ts,
+              fbkSoln._cs_iterates[-1], label= tag)
+        legend(loc='lower right');
+        subplot(212); hold(True);
+        plot(-array(fbkSoln._J_iterates), 'x-', label=tag);
+        legend();
+        
+        print  tag, fbkSoln._J_iterates[0], fbkSoln._J_iterates[-1]
+    title('Different Known Params');
+        
+          
 if __name__ == '__main__':
     from pylab import *
     Tf =  15;
@@ -1374,11 +1445,16 @@ if __name__ == '__main__':
     ''' check if there is a difference between a wide spread prior vs.
      a concentrated prior for the Optimal Stimulation:
       Conclusion: There is!'''
-    PriorSpreadBox(mu_sigma, Tf, alpha_bounds, resimulate=True)
+#    PriorSpreadBox(mu_sigma, Tf, alpha_bounds, resimulate=False)
  
     
-    'Check if optimizer ICs make a difference:'
-#    OptimizerICs(mu_sigma)
+    'Check effect of varying optimizer ICs make a difference:'
+#    OptimizerICsBox(mu_sigma,resimulate=False)
 
+
+    '''Check effect of varying mu, sigma'''
+    KnownParametersBox(resimulate=False)
+    
+    
 
     show();

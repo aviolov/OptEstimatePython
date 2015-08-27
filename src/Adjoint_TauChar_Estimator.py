@@ -9,15 +9,11 @@ from numpy.random import randn, seed
 from copy import deepcopy
 
 from scipy.interpolate.interpolate import interp2d, interp1d
-#from matplotlib.patches import FancyArrowPatch, FancyArrow, ArrowStyle
-#from matplotlib.font_manager import FontProperties 
-
-from ForwardSolver import ForwardSolver 
-#from ControlBasisBox import piecewiseConst
 from scipy.optimize.optimize import fminbound
 
-from AdjointSolver import FBKSolution, FPAdjointSolver,\
+from AdjointSolver import FPAdjointSolver,\
                           label_font_size,     xlabel_font_size
+from AdjointOptimizer import FBKSolution
                           
 from HitTime_MI_Beta_Estimator import SimulationParams, SimulationPaths
 
