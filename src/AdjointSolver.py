@@ -11,13 +11,14 @@ from scipy.sparse.linalg.dsolve.linsolve import spsolve
 from scipy.optimize.zeros import brentq
 from copy import deepcopy
 from scipy.optimize.optimize import fminbound
-#from PathSimulator import ABCD_LABEL_SIZE
-from matplotlib.font_manager import FontProperties
 from scipy import interpolate 
 
-import ext_fpc
-from HitTime_MI_Beta_Estimator import SimulationParams
+from matplotlib.font_manager import FontProperties
 
+import ext_fpc
+
+from HitTime_MI_Beta_Estimator import SimulationParams
+#from PathSimulator import ABCD_LABEL_SIZE
 from TauParticleEnsemble import TauParticleEnsemble
 
 RESULTS_DIR = '/home/alex/Workspaces/Python/OptEstimate/Results/FP_Adjoint/'
@@ -50,9 +51,18 @@ class FPAdjointSolver():
     TAUCHAR_INDEX = 1;
     BETA_INDEX = 2
     
-    def __init__(self, dx, dt, Tf, x_min, x_thresh = 1.0):  
+    def __init__(self, dx, dt, Tf,
+                  x_min, x_thresh = 1.0,
+                   Tf_optimization=None):
         #DISCRETIZATION:
         self.rediscretize(dx, dt, Tf, x_min, x_thresh)
+        
+        '''Tf_optimization ~ the last time for which the control is optimizable, 
+                            This is the time-point from which 
+                            the adjoint rolls backwards'''
+        if None == Tf_optimization:
+            Tf_optimization = Tf/2.0;
+        self.setTfOpt(Tf_optimization);
 
     #Grid management routines:    
     def rediscretize(self, dx, dt, Tf, x_min, x_thresh = 1.0):
@@ -72,17 +82,27 @@ class FPAdjointSolver():
         ts = linspace(.0, Tf, num_steps)
         dt = ts[1]-ts[0];
         return ts, dt
-    
+    def getOptTs_indices(self):
+        return where(self._ts<=self.Tf_optimization)[0];
+    def getOptTs(self):
+#        return self._ts[self.getOptTs_indices()];
+        return self._ts;
     def getTf(self):
         return self._ts[-1]
     def setTf(self, Tf):
         self._ts, self._dt = self._time_discretize(Tf, self._dt)
+    def setTfOpt(self,Tf_optimization):
+        if Tf_optimization>self.getTf():
+            print('Warning - trying to set TfOPT > Tf - NOT allowed')
+        else:
+            self.Tf_optimization = Tf_optimization;    
+        
     def getXthresh(self):
         return self._xs[-1]
     def getXmin(self):
         return self._xs[0]
     def setXmin(self, x_min):
-        self._xs, self._dx = self._space_discretize(x_min, self._dx)
+        self._xs, self._dx = self._space_discretize(x_min, self._dx)        
 
     @classmethod
     def calculate_xmin(cls, alpha_bounds, tau_chars, mu_sigma, num_std = 2.0):     
@@ -112,7 +132,9 @@ class FPAdjointSolver():
         return len(self._xs)
     def _num_steps (self):
         return len(self._ts)
-     
+    def _num_backward_steps(self):
+        return len(self._ts)
+#        return self.getOptTs().shape[0];     
     
     def _getICs(self, xs, alpha0, sigma):
         #WARNING! TODO: HOw do you choose 'a' correctly! 
@@ -121,11 +143,10 @@ class FPAdjointSolver():
         ICs = pre_ICs / (sum(pre_ICs)*self._dx) 
         return ICs
     
-    def _getAdjointBCs(self, tau_char_weights, fs, sigma):
-            
-        D = sigma*sigma/2.;    
+    def _getAdjointBCs(self, tau_char_weights, fs, sigma):            
         di_x_fs  = -squeeze(fs[:, -1,:] - fs[:, -2,:]) /\
-                           self._dx;
+                           self._dx;                           
+                           
 #        di_x_fs = -diff(sum(fs, axis=1), axis=1);        
 
         di_x_fs_mean = dot(tau_char_weights, di_x_fs);
@@ -137,7 +158,7 @@ class FPAdjointSolver():
         dixfs_over_dixfs_mean_bayesian[:, zero_ids] = 1.;
         
         '''return'''
-        bcs = log(dixfs_over_dixfs_mean_bayesian) + 1 - dixfs_over_dixfs_mean_bayesian
+        bcs = -log(dixfs_over_dixfs_mean_bayesian) - 1 + dixfs_over_dixfs_mean_bayesian
         
 #        figure();
 #        subplot(211);
@@ -158,31 +179,35 @@ class FPAdjointSolver():
         'Forward Distn'
         fs = squeeze( self._fsolve( [tau_char], [1.0],
                                     mu_sigma, alphas, visualize));
-        
-        'Diffusion Const'
-        D = mu_sigma[1]**2 / 2.0
-#        'Hitting Time Density'
-        gs = D*(fs[-2,:] - fs[-1,:])/self._dx;
-
-#        gs = r_[-diff(sum(fs, axis=0))*self._dx/self._dt,
-#                D*(fs[-2,-1] - fs[-1,-1])/self._dx];
-        
+        'hitting time distn:'                            
+        gs = self.hittime_distn_via_flow(mu_sigma[1], fs)
+#        gs = self.hittime_distn_via_conservation(fs);
+       
         if visualize:
-            figure()
-            plot(self._ts, gs); title('HItting Time distn'); xlabel('t'); ylabel('t');
+            figure(); plot(self._ts, gs); title('HItting Time distn'); xlabel('t'); ylabel('t');
             
         return gs;
     
+    def hittime_distn_via_flow(self, sigma, fs):
+        'Diffusion Const'
+        D = sigma*sigma / 2.0;
+        'g is the outflow at the upper boundary:'
+        return D*(fs[-2,:] - fs[-1,:])/self._dx;
+    def hittime_distn_via_conservation(self, fs):
+        Ntaus = fs.shape[0];
+        return r_[0, -diff(sum(fs, axis=0))*self._dx/self._dt];        
     
+    '''The main (solve) routine of the solver. 
+    RETRUNS: xs,ts,   fs,ps,   -J,grad_H'''
     def solve(self, tau_chars, tau_char_weights, mu_sigma,
-               alphas, alpha_max,
-               visualize=False, save_fig=False):
+               alphas,
+               visualize=False):
          
         '''the forward/adjoint states:''' 
         fs = self._fsolve( tau_chars, tau_char_weights,
-                            mu_sigma, alphas, visualize, save_fig)
+                            mu_sigma, alphas, visualize)
         ps = self._psolve( tau_chars, tau_char_weights,
-                            mu_sigma, alphas, fs, visualize, save_fig)
+                            mu_sigma, alphas, fs, visualize)
 
         
         '''the Mutial Information Objective:''' 
@@ -191,30 +216,53 @@ class FPAdjointSolver():
         '''the Hamiltonian gradient:''' 
         grad_H = self.calcObjectiveGradient(tau_char_weights, fs, ps)
         
-        return self._xs, self._ts, fs, ps, -J, -grad_H
+        return self._xs, self._ts, fs, ps, -J, grad_H
+    
+    '''Only solve for the Objective
+     (i.e. compute the hitting times distn and then the Mutual Information)
+     RETURNS: fs, -J'''    
+    def solveObjectiveOnly(self, tau_chars, tau_char_weights, mu_sigma,
+                            alphas,
+                            visualize=False):         
+        '''the forward states:''' 
+        fs = self._fsolve( tau_chars, tau_char_weights,
+                            mu_sigma, alphas, visualize);
+        
+        '''the Mutual Information Objective:''' 
+        J = self.calcObjective(tau_char_weights, fs);
+                
+        return fs, -J;
+    
     
     ###########################################
     def calcObjectiveGradient(self, tau_char_weights, fs, ps):         
-        '''The Hamiltonian gradient:
-        NOTE: THAT WE need to divide by dx in approximating the derivative and 
-        multiply by dx in approximating the integral so we just drop both (dx/dx = 1)''' 
+        '''Compute The Hamiltonian Gradient:
+        
+        NOTE: WE need to divide by dx in approximating the derivative and 
+        multiply by dx in approximating the integral so we just drop both, 
+        since (dx/dx = 1)''' 
          
+        'diff ps vs. xs:'
         dxps = diff(ps, axis=1);
         
-        dxp_times_f = squeeze( sum(fs[:, 1:,:]*dxps, axis=1) )
+        'subset to optimization-interval fs:'        
+#        var_fs = fs[:, 1:,self.getOptTs_indices()];
+        var_fs = fs[:, 1:,:];
+        
+        'Compute  int (di_x p \cdot f)'
+        dxp_times_f = -squeeze( sum(var_fs*dxps, axis=1) )
 
+        'Grad_H = sum w_t \cdot  int (\di_x p \cdot f)'
         grad_H = dot(tau_char_weights, dxp_times_f);
             
-        
         return grad_H;
         
     def calcObjective(self, tau_char_weights, fs):
-        
-    
+        '''Calculate the Mutual Information between the hitting-time
+           gs (\di_x fs_{xthresh}) and the prior'''
         xs, ts = self._xs, self._ts;
         dx, dt = self._dx, self._dt;
-        
-        
+                
         di_x_fs = -squeeze(fs[:, -1,:] - fs[:, -2,:]) /\
                            (xs[-1] - xs[-2])  ;
 
@@ -237,24 +285,40 @@ class FPAdjointSolver():
              
         return J
     
+    'The Forward Solve interface'
+    def _fsolve(self,  tau_chars, tau_char_weights,
+                    mu_sigma, alphas, 
+                    visualize=False):
+        ''' level of indirection'''
+        if visualize:
+            return self._fsolve_Py(tau_chars, tau_char_weights,
+                               mu_sigma, alphas, 
+                               visualize)
+        else:
+            return self._fsolve_C(tau_chars, tau_char_weights,
+                               mu_sigma, alphas, 
+                               visualize)
+            
+    'The Backward Solve interface'            
     def _psolve(self, tau_chars, tau_char_weights, mu_sigma,
-                 alphas, fs, visualize=False, save_fig=False):
+                 alphas, fs, visualize=False):
         'Interface to the underlying P(adjoint)-solver'
         return self._psolve_C(tau_chars, tau_char_weights,
                                mu_sigma, alphas, fs,
-                               visualize, save_fig)
+                               visualize)
 #        return self._psolve_Py(tau_chars, tau_char_weights,
 #                               mu_sigma, alphas, fs,
-#                               visualize, save_fig)
+#                               visualize)
     
     def _psolve_Py(self, tau_chars, tau_char_weights, mu_sigma,
-                 alphas, fs, visualize=False, save_fig=False):
+                   alphas, fs,
+                   visualize=False):
         'rip params:'
         mu, sigma = [x for x in mu_sigma]
         
-        
+        'rip discretization grid:'
         dx, dt = self._dx, self._dt;
-        xs, ts = self._xs, self._ts;
+        xs, ts = self._xs, self.getOptTs();
         
         if visualize:
 #            print 'tauchar = %.2f,  sigma = %.2f,' %(tauchar, sigma)
@@ -268,7 +332,7 @@ class FPAdjointSolver():
         #Allocate memory for solution:
         ps = zeros((num_weights, 
                     self._num_nodes(),
-                    self._num_steps() ));
+                    self._num_backward_steps() ));
                     
         #Impose TCs: automoatic they are 0
 #        ps[:,-1] = self._getTCs(xs, alpha_max+mu, tauchar, sigma)
@@ -279,7 +343,7 @@ class FPAdjointSolver():
                                            sigma);
             
         'Reset the TCs'
-        ps[:, :, -1] = .0;
+        ps[:, :, -1] = 0;
         if visualize:
             figure()
             subplot(311)
@@ -316,7 +380,7 @@ class FPAdjointSolver():
             soln_fig = figure()
         
         for pdx, tau_char in enumerate(tau_chars):
-            for tk in xrange(self._num_steps()-2,-1, -1):
+            for tk in xrange(self._num_backward_steps() - 2, -1, -1):
                 #Rip the forward-in-time solution:
                 p_forward = ps[pdx, :, tk+1];
     
@@ -330,31 +394,32 @@ class FPAdjointSolver():
                 
                 #Form the RHS:
                 L_forward = U_forward*(p_forward[2:] - p_forward[:-2]) / (2.* dx) + \
-                            D        *(p_forward[2:]- 2*p_forward[1:-1] + p_forward[:-2] ) / dx_sqrd;  
+                            D        *(p_forward[2:] - 2*p_forward[1:-1] + p_forward[:-2] ) / dx_sqrd;  
                 
                 #Impose the x_min BCs: homogeneous Newmann: and assemble the RHS: 
                 RHS = r_[0.,
-                         p_forward[1:-1] + .5 * dt * L_forward];
+                         p_forward[1:-1] + 0.5 * dt * L_forward];
                 
                 #Reset the Mass Matrix:
-                #Lower Diagonal
                 u =  U_current / (2*dx);
                 d_off = D / dx_sqrd;
                         
+                #Lower Diagonal
                 L_left = -0.5*dt*(d_off - u[:-1]);
                 M.setdiag(L_left, -1);
                 
-                #Upper Diagonal
-                L_right = -0.5*dt*(d_off + u);
+                #Upper Diagonal:
+                L_right = -0.5*dt*(d_off + u[:-1]);
                 M.setdiag(r_[NaN,
                              L_right], 1);
+                             
                 #Bottom BCs:
                 M[0,0] = -1.; M[0,1] = 1.;
                 
                 #add the terms coming from the upper BC at the backward step to the end of the RHS
                 p_upper_boundary = ps[pdx, -1, tk];
                 RHS[-1] += 0.5*dt*(d_off * p_upper_boundary + \
-                                   u[-1]*p_upper_boundary )
+                                   u[-1] * p_upper_boundary )
                 
                 #Convert mass matrix to CSR format:
                 Mx = M.tocsr();            
@@ -362,7 +427,7 @@ class FPAdjointSolver():
                 p_current = spsolve(Mx, RHS);
                 
                 #Store solutions:
-                ps[pdx, :-1, tk] = p_current;
+                ps[pdx, 0:-1, tk] = p_current;
                               
                 if visualize:
                     mod_steps = 40;  num_cols = 4;
@@ -392,30 +457,11 @@ class FPAdjointSolver():
         if visualize:
             for fig in [soln_fig]:
                 fig.canvas.manager.window.showMaximized()
-
-            if save_fig:
-                file_name = os.path.join(FIGS_DIR, 'f_t=%.0f_b=%.0f.png'%(10*tauchar, 10*beta))
-                print 'saving to ', file_name
-                soln_fig.savefig(file_name)
-                
         return ps
-    
-    def _fsolve(self,  tau_chars, tau_char_weights,
-                    mu_sigma, alphas, 
-                    visualize=False, save_fig=False):
-        ''' level of indirection'''
-        if visualize:
-            return self._fsolve_Py(tau_chars, tau_char_weights,
-                               mu_sigma, alphas, 
-                               visualize, save_fig)
-        else:
-            return self._fsolve_C(tau_chars, tau_char_weights,
-                               mu_sigma, alphas, 
-                               visualize, save_fig)
         
     def _fsolve_Py(self,  tau_chars, tau_char_weights,
                             mu_sigma, alphas, 
-                             visualize=False, save_fig=False):
+                             visualize=False):
         ''' returns fs[tau_ids, x_ids, t_ids];
         NOTE: tau_char_weights is irrelevant, I don't know why it's in the arg-list,
              it's not used''' 
@@ -433,6 +479,7 @@ class FPAdjointSolver():
         fs = zeros((num_weights, 
                     self._num_nodes(),
                     self._num_steps() ));
+        'WARNING: Unfortunately, we use the var-order: [taus, xs, ts], whereas it should be [taus, ts, xs] - for legacy reasons' 
                     
         #Impose Dirichlet BCs: = Automatic 
         #Impose ICs: 
@@ -457,7 +504,7 @@ class FPAdjointSolver():
         
         soln_fig = None;  
         if visualize:
-            soln_fig = figure()
+            soln_fig = figure();
 
         for tk in xrange(1, self._num_steps()):
             #Rip the control:
@@ -470,8 +517,7 @@ class FPAdjointSolver():
                           
                 #Calculate the velocity field
                 U_prev = ( alpha_prev + (mu - xs/ tau_char) )
-                U_next = ( alpha_next + (mu - xs/ tau_char) )
-                
+                U_next = ( alpha_next + (mu - xs/ tau_char) )                
                 
                 #Form the RHS:
                 L_prev = -(U_prev[2:]*f_prev[2:] - U_prev[:-2]*f_prev[:-2]) / (2.* dx) + \
@@ -547,27 +593,20 @@ class FPAdjointSolver():
             plot(ts, fs[0, -1, :]);
             title('BCs at xth', fontsize = 24) ; xlabel('t'); ylabel('f'); ylim([-.1,.1])
             
-            
-            
             for fig in [soln_fig]:
-                fig.canvas.manager.window.showMaximized()
-                
-            if save_fig:
-                file_name = os.path.join(FIGS_DIR, 'f_mu=%.0f_sigma=%.0f.png'%(10*mu, 10*sigma))
-                print 'saving to ', file_name
-                soln_fig.savefig(file_name)
-                
-                
+                fig.canvas.manager.window.showMaximized()                 
         return fs
     
     
     '''interface to the adjoint C solver'''
     def _psolve_C(self, tau_chars, tau_char_weights,
                     mu_sigma, alphas, fs,
-                    visualize=False, save_fig=False ):
+                    visualize=False):
+        
+        'return array:'
         array_shape = ( len(tau_chars), 
                         self._num_nodes(),
-                        self._num_steps() )
+                        self._num_backward_steps());        
         ps = empty(array_shape);
         
         ''' get the BCs - main link with fs '''
@@ -575,13 +614,16 @@ class FPAdjointSolver():
                                    fs, 
                                     mu_sigma[1] );
         
+        'time-steps for the solve:'
+        lts = self.getOptTs();        
+        
         for tdx, tau in enumerate(tau_chars):        
                 
             mu_tau_sigma = array([mu_sigma[0], tau, mu_sigma[1]]);
             'main ext.lib call: for some bizarre reason you need to wrap arrays inside an array() call:'            
             lp = ext_fpc.solve_p(mu_tau_sigma,                                 
                                  array(alphas),
-                                 array(self._ts),
+                                 array(lts),
                                  array(self._xs),
                                  array(squeeze(BCs[tdx,:])));
                                   
@@ -593,7 +635,7 @@ class FPAdjointSolver():
     '''Interface to the C routines for the forward FP soln'''
     def _fsolve_C(self,  tau_chars, tau_char_weights,
                     mu_sigma, alphas, 
-                    visualize=False, save_fig=False):
+                    visualize=False):
 #        fs = self._fsolve(tau_chars, tau_char_weights,
 #                          mu_sigma, alphas); 
         array_shape = ( len(tau_chars), self._num_nodes(), self._num_steps() )
@@ -611,6 +653,24 @@ class FPAdjointSolver():
             fs[tdx,:,:] = lf;
             
         return fs
+
+'''A fagtory constructor to return a by-default parameterized Solver for a
+ model-parameter-set'''    
+def generateDefaultAdjointSolver(tau_chars,
+                                 mu_sigma,
+                                 alpha_bounds = [-2,2],
+                                 Tf=16.0,
+                                 Tf_opt = None):
+    xmin = FPAdjointSolver.calculate_xmin(alpha_bounds, tau_chars , mu_sigma, num_std = 2.0)
+    dx = FPAdjointSolver.calculate_dx(alpha_bounds, tau_chars, mu_sigma, xmin, factor=0.5)
+    dt = FPAdjointSolver.calculate_dt(alpha_bounds, tau_chars, mu_sigma, dx, xmin, factor = 2.0)
+    
+    #Set up solver
+    lS =  FPAdjointSolver(dx, dt, Tf, xmin, 
+                          Tf_optimization=Tf_opt);
+    print 'Solver params: xmin, dx, dt, Tf, Tfopt', lS.getXmin(), lS._dx, lS._dt, lS.getTf(), lS.Tf_optimization;
+    
+    return lS;
 
 def visualizeAdjointSolver(tb = [.6, 1.25], Tf = 1.5, energy_eps = .001, alpha_bounds = (-2., 2.),
                            fig_name = None):
@@ -862,162 +922,209 @@ def timeAdjointSolver(tb = [.5, 1.25], Tf = 1.5, energy_eps = .1, alpha_bounds =
     print 'compute time = ',end-start, 's'
     
 
-############################################################
-def SingleSolveHarness(tau_chars, tau_char_weights,
-                       mu_sigma,  alpha_bounds=(-2,2), ts=None) :
-        
+###############################################################################
+def SingleSolveHarness(tau_chars, tau_char_weights, mu_sigma,  
+                       alpha_bounds=(-2,2),
+                       Tf = 16, ts=None) :
+    print('Model Params: m,b, ts', mu_sigma, tau_chars)
+    'Define Solver:'
     xmin = FPAdjointSolver.calculate_xmin(alpha_bounds, tau_chars , mu_sigma,  num_std= 1.0)
     dx = FPAdjointSolver.calculate_dx(alpha_bounds, tau_chars, mu_sigma, xmin, factor = 2.0)
     dt = FPAdjointSolver.calculate_dt(alpha_bounds, tau_chars, mu_sigma,
                                       dx, xmin, factor = 4.0)
+    
+    'Warning: Hard-coding dx,dt:'
+    dx = 0.04;
+    dt = 0.01;
+    
     print 'Solver params: xmin, dx, dt', xmin,dx,dt
-    print alpha_bounds
- 
-    Tf = 15
+    print 'Control bounds', alpha_bounds    
     S = FPAdjointSolver(dx, dt, Tf, xmin)
-    alpha_current = 2.0 * tanh( 2*(S._ts - Tf*0.5 ) );    
-    alpha_current =  (4.0) * (S._ts /S._ts[-1]) - 2.0
-#    alpha_current = zeros_like(S._ts)
+    print 'Tf, Tf_opt', S.getTf(), S.Tf_optimization;
     
-    alpha_max = alpha_bounds[1];
+    'Define Applied Control:'
+#    alpha_current = 2.0 * tanh( 2*(S._ts - Tf*0.5 ) );    
+    alpha_current =  (4.0) * (S._ts /S.Tf_optimization) - 2.0    
+    alpha_current[where(alpha_current>alpha_bounds[1])] = alpha_bounds[1];
     
-    print 'fs/ps size = %d'%(len(tau_char_weights)*len(S._ts)*len(S._xs)*8)
+#    alpha_max = alpha_bounds[1];
+#    alpha_current = zeros_like(S._ts) + alpha_max*(S._ts>S.Tf_optimization);    
+    
+    print 'fs+ps size = 2x%.2f MB'%(len(tau_char_weights)*len(S._ts)*len(S._xs)*8*1e-6)
+
 
     '''MAIN CALL:'''
-    xs, ts, fs, ps, J_first, grad_H =\
-            S.solve(tau_chars, tau_char_weights, mu_sigma, alpha_current, alpha_max,
-                    visualize=True);
-     
-#    fs = squeeze( S._fsolve(tau_chars, tau_char_weights,
-#                            mu_sigma, alpha_current, visualize=True));
-         
-    D = mu_sigma[1]**2/2;
+    xs, ts, fs, ps, J, grad_H =\
+            S.solve(tau_chars, tau_char_weights, mu_sigma, alpha_current,
+                    visualize=False);     
     
-    fs = squeeze(fs[-1,:,:]);
-    
-    'Hitting Time Density'
-    gs_flow = D*(fs[-2,:])/(S._dx);
-    gs_conservation = -diff(sum(fs, axis=0))*S._dx;
+        
+    'Make Simple Increment:'
+    alpha_next = deepcopy(alpha_current);
+    ids=S.getOptTs_indices();
+    alpha_next[ids] = alpha_current[ids] + 50*grad_H[ids];
 
-    survivor_function = sum(fs, axis=0) *S._dx
-    lower_flow = D*(fs[ 1,:]- fs[ 0,:])/S._dx  + \
-                (S._xs[0]/tau_chars[0] - alpha_current)*fs[0,:];
+    'SOLVE incremented Objective:'
+    fs_post, J_next = S.solveObjectiveOnly(tau_chars, tau_char_weights, mu_sigma, alpha_next);
+
+    print 'J_init =',J
+    print 'J_post_increment =',J_next;
+    
+    'Hitting Time Density:'    
+    D = mu_sigma[1]**2/2;  
+    lfs = squeeze(fs[-1,:,:]);
+    gs_flow = S.hittime_distn_via_flow(mu_sigma[1], lfs)
+    gs_conservation = S.hittime_distn_via_conservation(lfs);       
+    survivor_function = sum(lfs, axis=0)*S._dx
+    lower_flow = D*(lfs[ 1,:] - lfs[ 0,:])/S._dx  + \
+                (S._xs[0]/tau_chars[0] - alpha_current)*lfs[0,:];
 
     print 'gs_flow= : %.4f'%(sum(gs_flow*S._dt));
-    print 'gs_conservation= : %.4f'%(sum(gs_conservation));
+    print 'gs_conservation= : %.4f'%(sum(gs_conservation*S._dt));
     print 'lowerinflow = %4f'  %(sum(lower_flow)*S._dt)
             
-    'Visualize:'
-    figure();  subplot(211)
+    'Hitting Time Density: post-increment'    
+    lfs = squeeze(fs_post[-1,:,:]);
+    gs_flow_post = S.hittime_distn_via_flow(mu_sigma[1], lfs)
+    gs_conservation_post = S.hittime_distn_via_conservation(lfs);
+                     
+    'Visualize Hitting Time Distn:'
+    figure();  subplot(411)
     plot(S._ts, survivor_function)
     title('Survivor Function')
     hlines([.0, 1.], S._ts[0], S._ts[-1]);
-    subplot(212)
+    subplot(412)
     plot(S._ts, lower_flow); title('Lower BCs');
-    ylim( ymin=-1e-4, ymax=1e-4 )
-    
-    
-    figure();
+    ylim( ymin=-1e-4, ymax=1e-4 )    
+    subplot(413);
     plot(S._ts, gs_flow, 'r');
-    plot(S._ts[:-1], gs_conservation/S._dt, 'g');
+    plot(S._ts, gs_conservation, 'g');
+    legend(['g-flow', 'g-conservation'])
+    subplot(414);
+    plot(S._ts, gs_flow_post, 'r');
+    plot(S._ts, gs_conservation_post, 'g');
     legend(['g-flow', 'g-conservation'])
     
     
+    'Visualize Control Evolution:'
     figure()
-    subplot(211)
-    plot(S._ts, alpha_current); title('Current Control')
-    subplot(212)
-    plot(S._ts, grad_H);
-    title('Gradient')
+    subplot(211);hold(True);
+    plot(S._ts, alpha_current, 'b', label='pre'); title('Control'); 
+    plot(S._ts, alpha_next, 'r', label='post');
+    legend(); 
+    vlines(S.Tf_optimization, ylim()[0], ylim()[1], linestyles='dashed');    
     
-  
+    subplot(212);hold(True);
+    plot(S.getOptTs(), grad_H); 
+    vlines(S.Tf_optimization, ylim()[0], ylim()[1], linestyles='dashed');
+    title('Gradient over optimization interval')
+    
+        
+    
+    
 
+'''Compare the Python vs C implementation of the solver routines:'''
 def PyVsCDriver(tau_chars,
                  mu_sigma, 
-                 Tf):
+                 Tf):    
+    tau_char_weights = ones_like(tau_chars) / len(tau_chars);
+    
+    'Define Solver:'
     xmin = FPAdjointSolver.calculate_xmin(alpha_bounds, tau_chars ,
                                            mu_sigma, num_std = 1.0)
     dx = FPAdjointSolver.calculate_dx(alpha_bounds, tau_chars,
-                                       mu_sigma, xmin)
+                                       mu_sigma, xmin, factor=0.2)
     dt = FPAdjointSolver.calculate_dt(alpha_bounds, tau_chars,
                                        mu_sigma,  dx, xmin, factor = 4.0)
-  
-    #Set up solver
     S = FPAdjointSolver(dx, dt, Tf, xmin)
     print 'Solver params: xmin, dx, dt, Nx, Nt', S._xs[0], S._dx, S._dt, S._num_nodes(), S._num_steps(); 
     
+    'Define Control:'
     ts = S._ts;
-    alphas = sin(2*pi*ts);
-    tau_char_weights = ones_like(tau_chars) / len(tau_chars); 
+#    alphas = amin(c_[sin(2*pi*ts) + ts, 2*ones_like(ts)]);
+#    alphas = 2*ones_like(ts);
+    alphas = sin(2*pi*ts)*(ts<S.Tf_optimization) + 2*(ts>=S.Tf_optimization)
+    figure(); plot(ts, alphas); title('Applied Control')
+             
     
-#    pystart = time.clock();
-#    pyfs = S._fsolve_Py( tau_chars, tau_char_weights,
-#                       mu_sigma, alphas, visualize=False)
-#    print 'pytime = %.8f' %(time.clock() - pystart)
+    '''Forward Solution:'''
+    pystart = time.clock();
+    pyfs = S._fsolve_Py( tau_chars, tau_char_weights,
+                         mu_sigma, alphas, visualize=False)
+    print 'pytime = %.8f' %(time.clock() - pystart)
+
         
     Cstart = time.clock();
     Cfs = S._fsolve( tau_chars, tau_char_weights,
                        mu_sigma, alphas, visualize=False);
     print 'Ctime = %.8f' %(time.clock() - Cstart)
-
-    'Compare f'
-    ids = r_[arange(0,S._num_steps(), 10),
+#    pyfs = Cfs;
+    
+    'Compare f:'
+    ids = r_[arange(0,S._num_steps(), 100),
              S._num_steps() - 2, S._num_steps()-1];
     Nids = len(ids);
  
-#    py2c_error = sum(abs(pyfs - Cfs))
-#    print "py2c_error", py2c_error
+    py2c_error = sum(abs(pyfs - Cfs))
+    print "forward py2c_error", py2c_error 
+    'compare G'  
+    Gpy = sum(pyfs[0,:, :], axis=0)*S._dx;
+    Gc =  sum(Cfs[0,:, :], axis=0)*S._dx;
+    
+    'visualize f comparison:'
+    ffig = figure();
+    for pdx, idx in enumerate(ids):
+        subplot(ceil(Nids/2), 2, pdx+1)
+        hold(True);
+        Cf0s = Cfs[0,:, idx];
+        pyf0s = pyfs[0,:, idx]
+        plot(S._xs, Cf0s, 'rx-')
+        plot(S._xs, pyf0s, 'go-')        
+        title('Cps vs pyps (t=%.2f)'%S._ts[idx])
+    ffig.canvas.manager.window.showMaximized()
+            
+    figure(); hold(True);
+    plot(S._ts, Gpy, 'go-', label='py');
+    plot(S._ts, Gc,'rx-', label='C');
+    title('Survival Distn py vs. C')
+    legend();
+
+#    print('Bailing early '); return
+    
+    '''Backward Solution:'''
+    Cps = S._psolve_C( tau_chars, tau_char_weights, mu_sigma, alphas, Cfs); #print Cps.shape
+    pyps = S._psolve_Py(tau_chars, tau_char_weights, mu_sigma, alphas, Cfs);
+    
+    'Compare p'
+    ids = r_[arange(0,S._num_backward_steps(), 20),
+             S._num_backward_steps() - 2, S._num_backward_steps()-1];
+    Nids = len(ids);
  
-#    'compare G'  
-#    Gpy = sum(pyfs[0,:, :], axis=0)*S._dx;
-#    Gc =  sum(Cfs[0,:, :], axis=0)*S._dx;
-#    
-#    'visualize f comparison:'
-#    figure();
-#    for pdx, idx in enumerate(ids):
-#        subplot(ceil(Nids/2), 2, pdx+1)
-#        hold(True);
-#        Cf0s = Cfs[0,:, idx];
-#        pyf0s = pyfs[0,:, idx]
-#        plot(S._xs, Cf0s, 'rx-')
-#        plot(S._xs, pyf0s, 'gx-')
-#        title('Cps vs pyps (t=%.2f)'%S._ts[idx])
-#    figure(); hold(True);
-#    plot(S._ts, Gpy, 'gx-', label='py');
-#    plot(S._ts, Gc,'rx-', label='C');
-#    title('Survival Distn py vs. C')
-#    legend();
-
-
-    
-    ''' backward solution '''
-    pyps = S._psolve( tau_chars, tau_char_weights,
-                       mu_sigma, alphas, Cfs)
-    
-    Cps = S._psolve_C( tau_chars, tau_char_weights,
-                       mu_sigma, alphas, Cfs); 
-    print Cps.shape
-    
-    figure();
+    pfig = figure();
     for pdx, idx in enumerate(ids):
         subplot(ceil(Nids/2), 2, pdx+1)
         hold(True);
         Cp0s = Cps[0,:, idx];
         pyp0s = pyps[0,:, idx]
-        plot(S._xs, Cp0s, 'rx-')
-        plot(S._xs, pyp0s, 'gx-')
+        plot(S._xs, Cp0s, 'rx-', label='C')
+        plot(S._xs, pyp0s, 'go-', label='Python')
         title('Cfs vs pyfs (t=%.2f)'%S._ts[idx])
-    
-    figure()
-    plot(S._ts, Cps[0,-1,:], 'rx-')
-    hold(True);
-    plot(S._ts, pyps[0,-1,:], 'gx-')
-    title('BCs')  
+    legend()
+    pfig.canvas.manager.window.showMaximized()
+   
+    figure();    hold(True);
+    lts = S.getOptTs();
+    plot(lts, pyps[0, -1,:], 'go-', label='py')
+    plot(lts, Cps[0,  -1,:], 'rx-', label='C')
+    title('BCs at xthresh'); legend();  
                        
-    'compare p'
+    'compare p:'
     py2c_error = sum(abs(pyps - Cps))
-    print "py2c_error", py2c_error
+    print "backward py2c_error", py2c_error    
     
+        
+    
+'What are you trying to accomplish here?'
 def CVsCDriver():
     simPs   = SimulationParams(tau_char = 1.)
     Tf = 5.;    
@@ -1114,29 +1221,32 @@ def ForwardSolveBox(tau_chars,
 
 if __name__ == '__main__':
     from pylab import *
-    Tf =  20;
-    alpha_bounds = (-2., 2.);
+
+    mu_sigma = [0., 1.] 
     
-#    tau_chars = linspace(.25, 4, 2);
-    tau_chars = linspace(0.5, 2, 2);
-#    tau_chars = [2.5];
+    tau_chars = linspace(0.25, 4, 2);
+    tau_chars = linspace(0.5, 2,  2);
     tau_char_weights = ones_like(tau_chars) / len(tau_chars)
     
-    mu_sigma = [-0., 1.] 
-  
-    'Solve a Single Iteration of the Forward-Adjoint System (test-box)'
-    SingleSolveHarness( tau_chars, tau_char_weights, mu_sigma )  
+    alpha_bounds = (-2., 2.);
+      
+    Tf =  15;
     
-    '''This shows how to solve just the forward equation without the whole opt-control solve'''
-#    ForwardSolveBox(tau_chars,
-#                    mu_sigma,
-#                    Tf)
+    '''This shows how to solve just the forward equation without the whole opt-control solve''' 
+#    ForwardSolveBox(tau_chars, mu_sigma, Tf)
 
     
     '''move the main PDE-solves to C:'''
-#    PyVsCDriver(tau_chars,
-#                 mu_sigma, 5.0)
-#    CVsCDriver( )
+    PyVsCDriver(tau_chars, mu_sigma, 3.0);
+    
+    'Explore Solver <something>???'
+#    CVsCDriver()
+
+    'Solve a Single Iteration of the Forward-Adjoint System'
+#    for tau_chars in [ linspace(0.25, 4, 2), linspace(0.5, 2,  2)]:
+#        tau_char_weights = ones_like(tau_chars) / len(tau_chars)
+#        SingleSolveHarness(tau_chars, tau_char_weights, mu_sigma, Tf=Tf)  
+    
     
     show()
     

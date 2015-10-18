@@ -13,9 +13,10 @@ from scipy.optimize.optimize import fminbound
 
 from AdjointSolver import FPAdjointSolver,\
                           label_font_size,     xlabel_font_size
-from AdjointOptimizer import FBKSolution
                           
-from HitTime_MI_Beta_Estimator import SimulationParams, SimulationPaths
+from AdjointOptimizer import FBKSolution, FBKDriver, visualizeRegimes 
+                          
+from HitTime_MI_Beta_Estimator import SimulationParams
 
 
 RESULTS_DIR = '/home/alex/Workspaces/Python/OptEstimate/Results/HitTime_MI_TauChar_Adjoint_Estimate/'
@@ -27,9 +28,6 @@ for D in [FIGS_DIR, RESULTS_DIR]:
         os.mkdir(D)
 import time
 
- 
-#from collections import deque
- 
        
 #class EstimationResults():
 #    FILE_EXTENSION = '.er'
@@ -83,6 +81,59 @@ import time
 #        soln = cPickle.load(load_file)        
 #        return soln 
 
+       
+class SimulationPaths():
+    FILE_EXTENSION = '.sp'
+    def __init__(self, thits_blocks, simParams, alphasDict, sim_ts, betaEsts = []):
+        self.thits_blocks = thits_blocks;
+ 
+        self.simParams = simParams;
+        
+        self.alphasDict = alphasDict; 
+        
+        self.sim_ts = sim_ts;
+        
+        self.betaEsts = [];   
+        
+       
+    def save(self, file_name=None):
+#       path_data = {'path' : self}
+        if None == file_name:
+            P = self.simParams;
+            Nb = self.thits_blocks.shape[1]
+            Nh = self.thits_blocks.shape[2]
+            
+            file_name = self.getDefaultFileName(Nb,
+                                                Nh,
+                                                P.mu,
+                                                P.tau_char,
+                                                P.sigma );
+                                                                   
+        print 'saving hitting times to ', file_name
+        file_name = os.path.join(RESULTS_DIR, file_name + self.FILE_EXTENSION)
+        import cPickle
+        dump_file = open(file_name, 'wb')
+        cPickle.dump(self, dump_file, 1) # 1: bin storage
+        dump_file.close()
+        
+    @classmethod
+    def getDefaultFileName(cls, Nb, Nh, m,tc, sigma, ctag=''):
+        return 'HTSim_%s_Nb=%d_Nh=%d_m=%.2f_tc=%.2f_s=%.2f'%(ctag, Nb, Nh, m,tc, sigma);
+    
+    @classmethod
+    def load(cls, NbNhmtcs_ctag=None,file_name=None ):
+        ''' not both args can be None!!!'''
+        if None == file_name:
+            Nb, Nh, m,tc, sigma, ctag = [x for x in NbNhmtcs_ctag]
+            file_name = cls.getDefaultFileName(Nb, Nh, m,tc, sigma, ctag);
+
+        file_name = os.path.join(RESULTS_DIR, file_name +  cls.FILE_EXTENSION) 
+        print 'loading ', file_name
+        import cPickle
+        load_file = open(file_name, 'r')
+        soln = cPickle.load(load_file)        
+        return soln 
+
 ##################################################################
 ##################################################################
 ##################################################################
@@ -116,7 +167,7 @@ def visualizeControls(simPs, fbkSoln,
         savefig(lfig_name)
    
      
-def visualizePaths(simPs, fbkSoln,
+def visualizePaths(simPs,  
                    Nblocks , 
                   Nhits , 
                   fig_name=None):
@@ -125,24 +176,24 @@ def visualizePaths(simPs, fbkSoln,
     simPaths = SimulationPaths.load([Nblocks, Nhits, simPs.mu, simPs.tau_char, simPs.sigma, ''])
     
     thits_Blocks = simPaths.thits_blocks;
-    alphas = simPaths.alpha_tags;
     
     Nbins = floor(Nhits / 5);
-
+    
+    Nalphas = len(simPaths.alphasDict)
+    
     '''VISUALIZE'''   
     figure( figsize = (17, 10))
-    subplots_adjust(            wspace = .25 ); 
+    subplots_adjust(  wspace = .25 ); 
     
-    for pdx in xrange(0,len(alphas) ):
+    for (pdx, alpha_tag) in enumerate(simPaths.alphasDict.iterkeys()):
         thits = thits_Blocks[pdx, 0, :];
         
-        
-        subplot(len(alphas),1,pdx+1)
+        subplot(Nalphas,1,pdx+1)
         hist(thits, normed=True, bins = Nbins);
-        title(r'$\alpha=%s$'%alphas[pdx], fontsize = 36);
+        title(r'$\alpha=%s$'%alpha_tag, fontsize = 36);
         
         ylabel('frequency', fontsize = 24)  
-        if pdx == len(alphas)-1:
+        if pdx == Nalphas-1:
             xlabel('$t$', fontsize = 24)
             
     if fig_name != None:
@@ -152,13 +203,91 @@ def visualizePaths(simPs, fbkSoln,
         savefig(lfig_name)
     
     
-
-def GeneratePathsHarness(simPs,
-                         fbkSoln,
+'''Main Harness to generate/sample the hitting times for each considered control:'''
+def GeneratePathsHarness(simPs,                    
                          Nblocks = 2,
                          Nhits = 100,
-                         Tmax = 25., dt = .001, 
-                         x_0 = .0,
+                         Tmax = 25., dt = 0.001, 
+                         x_0 = 0.,
+                         visualize_paths = True,
+                         recompute_optimzation   = False,
+                         recompute_hitting_simulation = False,
+                         alpha_max = 2.0):
+    
+    
+
+    'Recompute Optimal Controls?'
+    Tf = 15.0
+    if recompute_optimzation:
+        mu_sigma = [simPs.mu, simPs.sigma]
+        
+        tau_chars_list = [linspace(0.25, 4, 10),
+                          [.25, 4],
+                          [.75, 1/.75 ]  ]
+   
+        priorTags = ['default-prior', 'wide-prior', 'narrow-prior']
+         
+        alpha_bounds = [-alpha_max,alpha_max];
+    
+        for prior_tag, tau_chars in zip(priorTags, tau_chars_list):
+            soln_name = 'BatchEstimate_%s'%prior_tag
+            
+            FBKDriver(tau_chars, ones_like(tau_chars)/len(tau_chars),
+                          mu_sigma,
+                          alpha_bounds=alpha_bounds,
+                          Tf=Tf,
+                          visualize_decsent = False,
+                          soln_save_name=soln_name);
+                          
+            'Visualize Regimes'
+            visualizeRegimes(tau_chars,
+                             mu_sigma,
+                             Tf,
+                             soln_name = soln_name)
+        
+    
+    def interpControl(soln_tag):
+        lFbkSoln = FBKSolution.load(soln_tag);
+        
+        return interp1d(lFbkSoln._Solver._ts, lFbkSoln._cs_iterates[-1],
+                          bounds_error = False, fill_value = lFbkSoln._alpha_bounds[-1]);
+    
+    alpha_crit = 1.0/simPs.tau_char
+ 
+    '''Put in a Dictionary'''    
+    alphaFunctionMap = {'opt': interpControl('BatchEstimate_default-prior'),
+                        'opt-wide': interpControl('BatchEstimate_wide-prior'),
+                        'opt-narrow': interpControl('BatchEstimate_narrow-prior'),
+                        'max': lambda ts: alpha_max*ones_like(ts),
+                        'crit': lambda ts: alpha_crit*ones_like(ts)}
+
+    
+    
+    '''Main Simulation Call'''
+    if recompute_hitting_simulation:
+        GeneratePathsBatch(alphaFunctionMap,
+                        simPs,                    
+                         Nblocks = Nblocks,
+                         Nhits = Nhits,
+                         visualize_paths=visualize_paths) 
+    
+    'Visualize for sanity:'
+    simPaths = SimulationPaths.load([Nblocks, Nhits, simPs.mu, simPs.tau_char, simPs.sigma, ''])
+    alphaFunctionMap = simPaths.alphasDict;
+       
+    figure(); hold(True)
+    for (key,val) in alphaFunctionMap.iteritems():
+        plot(simPaths.sim_ts, val, label=key);
+      
+    legend();
+    
+
+def GeneratePathsBatch(alphaFunctionMap,
+                        simPs,                    
+                         Nblocks = 2,
+                         Nhits = 100,
+                         Tmax = 25., dt = 0.001, 
+                         x_0 = 0.,
                          visualize_paths = True): 
     
     #ASSIGN STRUCT PARAMS:
@@ -168,22 +297,18 @@ def GeneratePathsHarness(simPs,
     sqrt_dt = sqrt(dt);  
     
     #the time points:   
-    N_ts = Tmax/dt;    
+    N_ts = Tmax/dt;  
     
-    #the storage vetors:
-    hts_block = empty((3, Nblocks,Nhits)) 
-      
-    alphas_opt = fbkSoln._cs_iterates[-1];
-    ts = fbkSoln._Solver._ts;  
+    # the number of controls:
+    N_alphas = len(alphaFunctionMap)
     
-    alpha_max = fbkSoln._alpha_bounds[-1]; 
-    alpha_crit = 1./simPs.tau_char;  
-    
-    figure(); plot(ts, alphas_opt);
-    alphaOpt = interp1d(ts, alphas_opt, 
-                        bounds_error = False, fill_value = alpha_max);
-    
+    #the storage vectors:
+    hts_block =     empty((N_alphas, Nblocks,Nhits)) 
+        
     lts = arange(0, Tmax, dt)
+    dWs = empty( (Nhits, N_ts-1) ); print prod(dWs.shape) *8/1e6
+    
+    
     #the dynamics RHS:    
     def compute_dX(alpha, x, dW): 
         return (alpha + (mu - x)/tauchar)*dt + sigma * dW
@@ -199,37 +324,26 @@ def GeneratePathsHarness(simPs,
             thit+=dt
         return thit
     
-    
-    
-    #The batch integration
-#    alphaFs = [alphaOpt]
- 
-    alphaFs = [alphaOpt(lts),
-               alpha_crit*ones_like(lts),
-               alpha_max * ones_like(lts)]
-    alpha_tags = ['opt', 'crit', 'max']
-    dWs = empty( (Nhits, N_ts-1) );print prod(dWs.shape) *8/1e6
+    '''The BATCH Sample Paths:''' 
     for bdx in xrange(Nblocks):   
         print '%d/%d'%(bdx,Nblocks)     
         #the common Gaussian incrments:
         dWs = randn(Nhits, N_ts-1) * sqrt_dt; 
         
         'Iterate over the various controls:'
-        for adx, (alphaF, alpha_tag) in enumerate( zip(alphaFs, alpha_tags)):            
+        for adx, ( alpha_tag, alphaF) in enumerate( alphaFunctionMap.iteritems() ):            
             print adx, alpha_tag
             for hdx in xrange(Nhits):
                 ldWs = dWs[hdx,:];
                 'compute hitting time'
-                hts_block[adx, bdx, hdx] = computeHittingTime(.0, alphaF, ldWs);
+                hts_block[adx, bdx, hdx] = computeHittingTime(.0, alphaF(lts), ldWs);
                 if hts_block[adx, bdx, hdx] > Tmax-.1:
                     print hts_block[adx, bdx, hdx]
- 
-                
+
+    for key in alphaFunctionMap.iterkeys():
+        alphaFunctionMap[key] = alphaFunctionMap[key](lts);
         
-#    if visualize_paths: 
-#        visualizePaths(Tf, Npaths, simParams = simPs)
-    alphas = [alphaF[0] for alphaF in alphaFs]
-    (SimulationPaths(hts_block, simPs, alphas, alpha_tags)).save();
+    (SimulationPaths(hts_block, simPs, alphaFunctionMap, lts)).save();
     
     
 
@@ -665,11 +779,8 @@ def estimatorDtDxConvergence(simPs, fbkSoln,
                                              lSolver._num_nodes(), lSolver._num_steps(),
                                              beta_est)
          
-def NblocksNhitsRearrange(simPs, fbkSoln ):
+def NblocksNhitsRearrange(simPs,Nblocks, Nhits):
     'a utility to spearate an existing Hitting TIme Simulation into different Ns x Nb splits'
-    Nblocks = 100;
-    Nhits = 1000;
-    
     N_all_hits = Nblocks*Nhits;
     
     #Load:
@@ -677,81 +788,78 @@ def NblocksNhitsRearrange(simPs, fbkSoln ):
         
     thits_Blocks = simPaths.thits_blocks;  
     
+    Nalphas = thits_Blocks.shape[0];
+    
     for Nblocks in [1, 10, 100, 1000]:
         Nhits = N_all_hits // Nblocks;
 #        thits_Blocks = thits_Blocks.reshape((3, Nblocks, Nhits))
-        simPaths.thits_blocks = copy(thits_Blocks.reshape((3, Nblocks, Nhits)))
+        simPaths.thits_blocks = copy(thits_Blocks.reshape((Nalphas, Nblocks, Nhits)))
         
         simPaths.save();
         
-    print simPaths.betaEsts
+        print simPaths.betaEsts
                  
                           
 def estimateHarness(simPs, fbkSoln,
                      Nblocks, Nhits, 
-                     refine_factor = 16.,
+                     refine_factor = 2.,
                      fig_name=None, reestimate = True):
     
     #Load:
     simPaths = SimulationPaths.load([Nblocks, Nhits, simPs.mu, simPs.tau_char, simPs.sigma, ''])
     
-    'Target Data:'
-    thits_Blocks = simPaths.thits_blocks;
-    
-    'FP Solver:'
-    lSolver = deepcopy(fbkSoln._Solver);
-    
-    alphas = simPaths.alphas;
-    Nalphas = len(alphas);
-    print 'Loaded %d Blocks of %d Hitting times for %d controls:'%(thits_Blocks.shape[1], thits_Blocks.shape[2], thits_Blocks.shape[0])
-    
-    betaEsts = empty((Nalphas, Nblocks))
+    if reestimate:
+        'Target Data:'
+        thits_Blocks = simPaths.thits_blocks;
         
-    alpha_crit = 1./simPs.tau_char; 
-    alpha_max = fbkSoln._alpha_bounds[-1]; 
-     
-    ts = fbkSoln._Solver._ts;
-    alphas_opt = fbkSoln._cs_iterates[-1]
-    alphaOpt   = interp1d(ts, alphas_opt, 
-                          bounds_error = False, fill_value = alphas_opt[-1]);
-    
-    alphaFs = [alphaOpt,
-               lambda t: alpha_crit*ones_like(t),
-               lambda t: alpha_max*ones_like(t)]
-    
-    'refine the solver:'
-    lSolver.rediscretize(lSolver._dx/refine_factor,   lSolver._dt/refine_factor,
-                         lSolver.getTf(), lSolver._xs[0])
-    
-    for adx, (alpha_tag, alphaF) in enumerate(zip(simPaths.alpha_tags,
-                                                 alphaFs)):
-        print alpha_tag 
-        for bdx in xrange(Nblocks):
-#        for bdx in [0]:
-            hts = squeeze(thits_Blocks[adx, bdx,:]);
+        'FP Solver:'
+        lSolver = deepcopy(fbkSoln._Solver);
+        
+        ts = simPaths.sim_ts;
+        alphasMap = simPaths.alphasDict;
+        Nalphas = len(alphasMap);
+        print 'Loaded %d Blocks of %d Hitting times for %d controls:'%(thits_Blocks.shape[1], thits_Blocks.shape[2], thits_Blocks.shape[0])
+        
+        betaEsts = empty((Nalphas, Nblocks))
             
-#            subplot(3, 1, adx)
-#            hist(hts, bins = 100)
-#            title('%s %d'%(alpha_tag, len(hts) ))
+        alpha_max = fbkSoln._alpha_bounds[-1]; 
+        
+        
+        'refine the solver:'
+        lSolver.rediscretize(lSolver._dx/refine_factor,   lSolver._dt/refine_factor,
+                             lSolver.getTf(), lSolver._xs[0])
+        
+        for adx, (alpha_tag, alphas) in enumerate( alphasMap.iteritems() ):
             
-            betaEsts[adx, bdx] = calcBetaEstimate(lSolver,
-                                                  hts,
-                                                  alphaF,
-                                                  [simPaths.simParams.mu,
-                                                    simPaths.simParams.sigma] );
-            print '\n', betaEsts[adx, bdx]
-    
-    'Append estimates to the paths:' 
-    simPaths.betaEsts = betaEsts;
-    
-    'resave:'
-    simPaths.save();
-    
-    print betaEsts
-    
-    return betaEsts
+            print adx, alpha_tag 
             
+            alphaF =  interp1d(ts, alphas , bounds_error = False, fill_value = alpha_max)
+            
+            for bdx in xrange(Nblocks):
+    #        for bdx in [0]:
+                hts = squeeze(thits_Blocks[adx, bdx,:]);
+                
+    #            subplot(3, 1, adx)
+    #            hist(hts, bins = 100)
+    #            title('%s %d'%(alpha_tag, len(hts) ))
+                
+                betaEsts[adx, bdx] = calcBetaEstimate(lSolver,
+                                                      hts,
+                                                      alphaF,
+                                                      [simPaths.simParams.mu,
+                                                        simPaths.simParams.sigma] );
+                print '\n', betaEsts[adx, bdx]
+        
+        'Append estimates to the paths:' 
+        simPaths.betaEsts = betaEsts;
+        
+        'resave:'
+        simPaths.save();
     
+    ''' Post Analysis: visualize and latexify results'''
+    postAnalysis( Nblocks = Nblocks, 
+                  Nhits = Nhits, 
+                  simPs = simPs) 
     
     
 def estimateHarnessSandbox(Tf, Npaths = 10, Npaths_to_visualize = 4,
@@ -837,41 +945,60 @@ def postAnalysis(Nblocks, Nhits, simPs,
     
     betaEsts = simPaths.betaEsts
     
-    ctags = simPaths.alpha_tags
+    ctags = [a for a in simPaths.alphasDict.iterkeys()];
        
-#    VISUALIZE:
-    figure(figsize =(8,8)) ; hold(True)
-    for adx, x, c_tag, col  in zip( range(len(simPaths.alphas)),
-                                   [-1,0 , 1],
-                                    ctags,
-                                    ['b', 'r', 'g']):
+    Nalphas = len(simPaths.alphasDict);
+    
+    'VISUALIZE:'
+    figure(figsize =(17,10)) ; hold(True)
+    for (adx, c_tag, col) in zip( range(Nalphas),
+                                     ctags,
+                                    ['b', 'r', 'g', 'y', 'k', 'b', 'r', 'g', 'y', 'k'][0:Nalphas]):
         bs = betaEsts[adx,:]; 
-        scatter(x*ones_like(bs), 1/bs, c = col );
+        
+        scatter(adx*ones_like(bs), 1/bs, c = col );
         print c_tag, mean(bs), std(bs)
+        
+#    figure(figsize =(17,10)) ; hold(True)
+#    for (adx, c_tag) in zip( range(Nalphas),
+#                                     ctags):
+#        bs = betaEsts[adx,:]; 
+#        subplot(5,2, adx*2 +1)
+#        hist(1/bs); title('Raw')
+#        subplot(5,2, adx*2 +2); hist(log(1/bs)); title('log Transformed')
+#    return
+
     ylabel(r'$\hat{\tau}$', fontsize=xlabel_font_size)
-    hlines(1./simPaths.simParams.tau_char, -1, 1);
-    legend(ctags)  
-    xlabel('Control Strategy Index');
-    ylim((0.,4))
+    hlines(simPaths.simParams.tau_char, 0, Nalphas-1);
+#    legend(ctags)  
+    axc = gca();
+    axc.set_xticks(range(Nalphas))
+    axc.set_xticklabels(ctags,  fontsize = 24) 
+ 
+    xlabel('Control Strategy', fontsize = label_font_size);
+    ylim((0 ,2))
+    ticks = [0,1,2,]
+    axc.set_yticks(ticks)
+    axc.set_yticklabels(['$%.0f$'%t for t in ticks],
+                         fontsize = label_font_size) 
+    
+
     
     fig_name =  os.path.join(FIGS_DIR, 'miestimates_scatterplot_Nb%d_Ns%d.pdf'%(Nblocks, Nhits))
     print 'Saving to ', fig_name
     savefig(fig_name);
     
-    #LATEXIFY:
-    
+    '''LATEXIFY:'''
     print 'latexifying:'
     
-    latex_string = r'control type & mean($\log ( \hat\tau ) ) & std($ log( \hat\tau) $) \\ \hline '
+    latex_string = r'control type & mean($ \hat\tau  $ ) & std($ \hat\tau $) \\ \hline '
     
-    for adx, x, c_tag, col  in zip( range(len(simPaths.alphas)),
-                                   [-1,0 , 1],
-                                    ctags,
-                                    ['b', 'r', 'g']):
+    for adx,   c_tag,  in zip( range(Nalphas),
+                                    ctags):
         bs = betaEsts[adx,:]; 
         taus = 1.0/bs;
-        log_taus = log(taus)
-        latex_string+= r'%s & %.3f & %.2f \\' %(c_tag, mean(log_taus ), std(log_taus ) )
+#        log_taus = log(taus)
+        latex_string+= r'%s & %.3f & %.2f \\' %(c_tag, mean(taus ), std(taus ) )
         
     print latex_string
         
@@ -995,53 +1122,55 @@ if __name__ == '__main__':
     Tf = 15.;
     Nblocks = 100; 
     Nhits   = 1000;
-    N_all_hits = 1e5;
+#    Nblocks = 10; 
+#    Nhits   = 100;
+    N_all_hits = Nblocks*Nhits;
     
     'Load OptSoln:'
-    fbkSoln = FBKSolution.load(mu_beta_Tf_Ntaus = [simPs.mu, simPs.sigma, Tf, 16])
-    
-    'visualize controls (sanity check)'   
+#    fbkSoln = FBKSolution.load(mu_beta_Tf_Ntaus = [simPs.mu, simPs.sigma, Tf, 16])
+#    fbkSoln = FBKSolution.load('PriorSpread_wide prior')
+#    fbkSoln = FBKSolution.load('PriorSpread_narrow prior')
+#    'visualize controls (sanity check)'   
 #    visualizeControls(simPs,
 #                      fbkSoln, 
-#                      Tf = Tf,
-#                      fig_name='opt_vs_crit_vs_max_control_illustrate');
+#                      Tf = fbkSoln._Solver._ts[-1])#, fig_name='opt_vs_crit_vs_max_control_illustrate');
 
-    '''Simulate N passage times'''
-#    GeneratePathsHarness(simPs, fbkSoln,
+    '''Simulate Nb x Nh passage times'''
+#    GeneratePathsHarness(simPs,
 #                          Nblocks = Nblocks, 
-#                            Nhits = Nhits)
-        
+#                            Nhits = Nhits,
+#                            recompute_optimzation=False,
+#                            recompute_hitting_simulation=False)
     
     ''' splits the existing set into different blocks x hits compartments'''
-#    NblocksNhitsRearrange(simPs, fbkSoln)
+#    NblocksNhitsRearrange(simPs, Nblocks,  Nhits )
     
     '''visualize the hitting-time (g(t)) histograms'''
-#    visualizePaths(simPs, fbkSoln,
-#                   Nblocks = Nblocks, 
-#                   Nhits = Nhits) #fig_name = 'three_pt_prior')
+#    visualizePaths(simPs, 
+#                   Nblocks = 1, 
+#                   Nhits = 1000) #fig_name = 'three_pt_prior')
 
 
     '''Inspect the estimator routines for various test cases / convergences:'''
 #    estimatorWorkbench(simPs, fbkSoln)  
   
 
-    '''Do the actual parameter estimation''' 
+    '''BATCH Parameter Estimation:''' 
 #    for Nh in array( [1e5] ).astype(int) :
     for Nh in array( [ 1e2  , 1e3, 1e4, 1e5 ]).astype(int): 
-#    for Nh in array( [1e2 ]).astype(int): 
-        Nb = 100000 // Nh;
-#        'Estimate tau_char:'       
-#        estimateHarness(simPs, fbkSoln,
-#                        Nblocks = Nb, 
-#                        Nhits = Nh) 
-        '''visualize and latexify results'''
-        postAnalysis( Nblocks = Nb, 
-                        Nhits = Nh, 
-                        simPs = simPs) 
-     
+#    for Nh in array( [1e2, 1e3 ]).astype(int): 
+        Nb = N_all_hits // Nh;
+        'Estimate tau_char:'       
+        estimateHarness(simPs, 
+                        FBKSolution.load('BatchEstimate_wide-prior'),
+                        Nblocks = Nb, 
+                        Nhits = Nh,
+                        reestimate=False) 
+         
 
     '''The sweep through beta /sigma'''
 #    BetaSigmaSweepHarness()
+    
     
     
     show()
