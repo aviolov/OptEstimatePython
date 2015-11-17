@@ -68,19 +68,19 @@ class AdjointOptimizer():
         self.visualize = visualize;
         
                                          
+    'generate initial alpha control:'                
     def  getInitialControl(self, ts, initial_ts_cs):
-        'generate initial alpha control:'                
         if (None == initial_ts_cs):
             #            initial_control = alpha_max/2.0*ones_like(ts)
             return zeros_like(ts)
         else:
             return interp(ts, initial_ts_cs[0], initial_ts_cs[1]);
 
+    'Push alpha step_size in direction, up to constraints:'
     def incrementAlpha(self, alpha_current, 
                        step_size,
                        direction,
                        optimization_inds):
-        'Push alpha step_size in direction, up to constraints:'
         
         alpha_min, alpha_max = self.alpha_bounds[0], self.alpha_bounds[1];
         e = ones_like(alpha_current);
@@ -97,14 +97,15 @@ class AdjointOptimizer():
         'bound from above and return'
         return amin(c_[alpha_max*e, alpha_bounded_below], axis=1)
    
+    'return those nodes where the control can be perturbed:'
     def getActiveNodes(self, alpha_current, grad_H, opt_inds):
-        'return those nodes where the control can be perturbed:'
         active_nodes = ( (alpha_current[opt_inds] > self.alpha_bounds[0]) | (grad_H[opt_inds]>0) ) & \
                        ( (alpha_current[opt_inds] < self.alpha_bounds[1]) | (grad_H[opt_inds]<0) )
         if self.visualize:
             print 'active_nodes count = %d'%(len(active_nodes))
         return active_nodes;
      
+    'given direction, make a step incrementing the objective:'
     def makeSingleStepIncrement(self,
                                 curriedObjectiveFunc,
                                 J_current,  alpha_current,
@@ -112,7 +113,6 @@ class AdjointOptimizer():
                                  initial_step_size, 
                                  K_singlestep_max=10,
                                  step_size_reduce_factor=0.5):
-        'given direction, make a step incrementing the objective'
         single_step_succeeded = False;        
         
         step_size = initial_step_size;
@@ -158,11 +158,11 @@ class AdjointOptimizer():
     'A basic gradient ascent optimizer'
     def basic_gradDescent(self,
                           initial_ts_cs = None,
-                          step_size_base = 20.,
+                          step_size_base = 10.,
                           grad_norm_tol = 1e-5,
-                          obj_diff_tol  = 1e-3,
-                          soln_diff_tol = 1e-3,                          
-                          K_max = 100,
+                          obj_diff_tol  = 1e-4,
+                          soln_diff_tol = 1e-4,                          
+                          K_max = 16,
                           K_singlestep_max = 10):
         
         S = self.Solver;
@@ -194,7 +194,8 @@ class AdjointOptimizer():
             alpha_iterations.append(alpha_current);
             '''First MAIN CALL:'''
             _, ts, fs, ps, J_current, grad_H =\
-                S.solve(tau_chars, tau_char_weights, mu_sigma,  alpha_current);
+                S.solve(self.tau_chars, self.tau_char_weights, self.mu_sigma, 
+                             alpha_current);
             J_iterations.append(J_current);
                           
             'rip active nodes - those nodes where control-perturbations  are allowed:'                                           
@@ -224,14 +225,16 @@ class AdjointOptimizer():
             
             
             'Single Step Increment:'
-            curriedObjectiveFunc = lambda alpha_incremented : self.Solver.solveObjectiveOnly(tau_chars,
-                                                                                             tau_char_weights, mu_sigma, alpha_incremented);
+            curriedObjectiveFunc = lambda alpha_incremented : self.Solver.solveObjectiveOnly(self.tau_chars,
+                                                                                             self.tau_char_weights,
+                                                                                             self.mu_sigma,
+                                                                                             alpha_incremented);
             success_flag, J_current, alpha_current, step_size = \
                     self.makeSingleStepIncrement(curriedObjectiveFunc,
                                                  J_current,
                                                  alpha_current,
                                                  grad_H, opt_inds,
-                                             step_size, K_singlestep_max);
+                                                 step_size, K_singlestep_max);
             if False==success_flag:
                 print 'Single Step Increment Failed! Bailing...'
                 break
@@ -334,7 +337,7 @@ class FBKSolution():
         soln = cPickle.load(load_file)        
         return soln
 
-    
+'Main Interface Routine to compute the optimal control for a set of Input Parameters'    
 def FBKDriver(tau_chars, tau_char_weights,
               mu_sigma, 
               Tf= 10., Tf_opt = None,
@@ -342,19 +345,22 @@ def FBKDriver(tau_chars, tau_char_weights,
               save_soln = True, 
               soln_save_name = None,
               visualize_decsent = True,             
-              visualize_summary=True):
-    print tau_chars, tau_char_weights, mu_sigma, Tf
-     
-    init_ts = linspace(0, Tf, 1000)
-#    init_cs  = 0.9*alpha_bounds[-1]*cos(2*pi*init_ts/Tf);
-    cut_pt = 2*Tf/3
-    init_cs  = 0.95*alpha_bounds[-1]* tanh( 4*(init_ts - cut_pt ) );
+              visualize_summary=True,
+              init_ts = None, init_cs = None):
+    if len(tau_chars) < 2:
+        raise RuntimeError('FBKDriver::expected more than 1 tau-chars')
+    print 'FBKDriver::', tau_chars, tau_char_weights, mu_sigma, Tf
     
-   
-    init_cs =  ( ( alpha_bounds[1] - alpha_bounds[0]) *  init_ts/Tf_opt ) + alpha_bounds[0];
-#    init_cs =  ( alpha_bounds[1] * init_ts/init_ts[-1] );
-#    init_cs = 0*ones_like(init_ts) + alpha_bounds[1]*(init_ts>Tf/2);
+    if None == init_ts:
+        init_ts = linspace(0, Tf, 1000);
+        
+    if None == init_cs:
+        init_cs =  ( ( alpha_bounds[1] - alpha_bounds[0]) *  init_ts/Tf_opt ) + alpha_bounds[0];
 
+    'Enforce max-control past the point of optimization'
+    init_cs[where(init_ts>Tf_opt)] = alpha_bounds[1];
+
+    
     'Construct Optimizer:'
     lOptimizer = AdjointOptimizer(tau_chars, tau_char_weights, mu_sigma,
                                   Tf, Tf_opt, 
@@ -364,10 +370,10 @@ def FBKDriver(tau_chars, tau_char_weights,
     'Main Optimization Call:'
     lSolver, fs, ps, cs_iterates, J_iterates = \
                 lOptimizer.basic_gradDescent(initial_ts_cs = [init_ts, init_cs],
-                                             step_size_base = 50.0,
+                                             step_size_base = 10.0,
                                              K_max=10);
                                              
-    'Cache results?'
+    'Save results?'
     if save_soln:
         (FBKSolution(tau_chars, tau_char_weights,
                      mu_sigma, alpha_bounds,
@@ -377,9 +383,7 @@ def FBKDriver(tau_chars, tau_char_weights,
                      
     'Visualize?'                 
     if visualize_summary:
-        visualizeRegimes(tau_chars,
-                      mu_sigma,
-                       Tf)
+        visualizeRegimes(tau_chars, mu_sigma, Tf)
                 
 
 def usingMultiprocsExample(regimeParams, Tf, energy_eps = .001,
@@ -414,7 +418,6 @@ def visualizeRegimes(tau_chars,
     Plot Objective Increment
     '''
     
-    
     'load soln:'
     if None == soln_name:
         fbkSoln = FBKSolution.load(mu_beta_Tf_Ntaus = mu_sigma + [Tf] + [len(tau_chars)])
@@ -426,10 +429,10 @@ def visualizeRegimes(tau_chars,
     subplots_adjust(hspace = 0.6, left=.15, right=.975 )
     
     '''Load Results''' 
-    ts,xs, cs_init, cs_opt, Js, fs = fbkSoln._Solver._ts, fbkSoln._Solver._xs,\
-                                 fbkSoln._cs_iterates[0], fbkSoln._cs_iterates[-1],\
-                                 fbkSoln._J_iterates,\
-                                 fbkSoln._fs; 
+    ts, Tfopt, cs_init, cs_opt, Js, fs = fbkSoln._Solver._ts,  fbkSoln._Solver.Tf_optimization,\
+                         fbkSoln._cs_iterates[0], fbkSoln._cs_iterates[-1],\
+                         fbkSoln._J_iterates,\
+                         fbkSoln._fs; 
                         
     cmin, cmax = [x for x in fbkSoln._alpha_bounds]
     
@@ -442,12 +445,14 @@ def visualizeRegimes(tau_chars,
     axc.legend(['Init Guess', 'Opt Soln (%d iterations)'%len(fbkSoln._cs_iterates) ],
                loc='upper left')
     
-    
+    axc.vlines(Tfopt, cmin ,cmax, linestyles='--')
     axc.set_xlim(ts[0], ts[-1]);
     axc.set_ylim(cmin ,cmax);
-    time_ticks = [ts[-1] /3. , 2.*ts[-1] /3. ,ts[-1] ]
+    time_ticks = [ts[-1] /3. , Tfopt  ,ts[-1] ]
     axc.set_xticks(time_ticks)
-    axc.set_xticklabels(['$%.1f$'%x for x in time_ticks],  fontsize = label_font_size) 
+    xtick_labels = ['$%.1f$'%x for x in time_ticks];
+    xtick_labels[1] = '$t_{opt}$';
+    axc.set_xticklabels(xtick_labels,  fontsize = label_font_size) 
  
     ticks = [cmin,   .0 ,cmax]
     axc.set_yticks(ticks)
@@ -475,14 +480,12 @@ def visualizeRegimes(tau_chars,
     
     axg.set_xlim(ts[0], ts[-1]); 
     axg.set_xticks(time_ticks)
-    axg.set_xticklabels(['$%.1f$'%x for x in time_ticks],  fontsize = label_font_size) 
+    axg.set_xticklabels(xtick_labels,  fontsize = label_font_size) 
     axg.set_ylim(0, gtickmax);  
     axg.set_yticks([0, gtickmax])
     axg.set_yticklabels(('$0$','$%.1f$'%gtickmax),
                          fontsize = label_font_size) 
     
-    
-             
     '''hitting time density (OPTIMAL)'''
     axg = solnfig.add_subplot(4, 1, 3); hold(True)
     D = fbkSoln._sigma**2/2.0
@@ -499,15 +502,13 @@ def visualizeRegimes(tau_chars,
     axg.set_ylabel(r'$g (t| \tau_c)$', fontsize = xlabel_font_size);
     axg.set_title('Optimal Control Hitting Time Densities', fontsize=xlabel_font_size) 
     axg.set_xticks(time_ticks)
-    axg.set_xticklabels(['$%.1f$'%x for x in time_ticks],  fontsize = label_font_size) 
+    axg.set_xticklabels(xtick_labels,  fontsize = label_font_size) 
     axg.set_xlim(ts[0], ts[-1]); 
     axg.set_ylim(0, gtickmax);  
     axg.set_yticks([0, gtickmax])
     axg.set_yticklabels(('$0$','$%.1f$'%gtickmax),
                          fontsize = label_font_size) 
         
-    
-  
     '''Objective Progress'''
     axj = solnfig.add_subplot(4, 1, 4)
 #    axj.hold(True);
@@ -523,7 +524,8 @@ def visualizeRegimes(tau_chars,
                          fontsize = label_font_size) 
         
     for tick in axj.xaxis.get_major_ticks():
-                tick.label.set_fontsize(label_font_size) 
+                tick.label.set_fontsize(label_font_size)
+
     '''save?'''    
     if None != fig_name:
         lfig_name = os.path.join(FIGS_DIR, fig_name + '.pdf')
@@ -647,33 +649,46 @@ def NtausBox(mu_sigma, Tf,
     
     tau_chars_list = [[0.5, 2],
                       [1./tau_upper, 1., tau_upper ] ]
-   
+    
+    tau_chars_many = linspace(0.25,4,16);
+    tau_mean = mean(tau_chars_many);
+    tau_std_dev = std(tau_chars_many);
+    print tau_mean, tau_std_dev
+    tau_chars_2 = [tau_mean-tau_std_dev, tau_mean+tau_std_dev]
+    tau_chars_list = [tau_chars_2, tau_chars_many]
+
+    Tfopt = 2/3*Tf;
+    
     optControls = {}; ts = {};
     cmin = -2; cmax = 2;
-    for prior_tag, tau_chars in zip(['2pt prior', '3pt prior'], tau_chars_list):
+    for prior_tag, tau_chars in zip(['2pt_prior', '3pt_prior'], tau_chars_list):
         Ntaus = len(tau_chars)
-        print tau_chars
+        print prior_tag
         tau_char_weights = ones_like(tau_chars)/Ntaus
      
         if resimulate: 
             FBKDriver(tau_chars, tau_char_weights,
                       mu_sigma,
                       alpha_bounds=alpha_bounds,
-                      Tf=Tf,
-                      visualize_decsent = False);
+                      Tf=Tf,Tf_opt=Tfopt,
+                      init_ts = arange(0, Tf, 0.01),
+                      init_cs = alpha_bounds[1]*cos(2*pi*arange(0, Tf, 0.01)/Tf_opt),
+                      soln_save_name = prior_tag,
+                      visualize_decsent = False,
+                      visualize_summary = False);
                       
         'Visualize Regimes'
         visualizeRegimes(tau_chars,
                          mu_sigma,
-                         Tf)  # fig_name= 'GradientAscent_Nt%d'%len(tau_chars) )#,  
+                         Tf,
+                         soln_name=prior_tag)  # fig_name= 'GradientAscent_Nt%d'%len(tau_chars) )#,  
 
-        fbkSoln = FBKSolution.load(mu_beta_Tf_Ntaus = mu_sigma + [Tf] + [len(tau_chars)])
+        fbkSoln = FBKSolution.load(prior_tag)
         
         ts[prior_tag] = fbkSoln._Solver._ts;
-        optControls[prior_tag] =   fbkSoln._cs_iterates[-1] 
+        optControls[prior_tag] = fbkSoln._cs_iterates[-1] 
                         
         cmin, cmax = [x for x in fbkSoln._alpha_bounds]
-    
     
     
     '''CONTROL FIGURE'''
@@ -681,11 +696,11 @@ def NtausBox(mu_sigma, Tf,
     subplots_adjust(bottom = 0.2, left=.15, right=.975 )
    
     axc = solnfig.add_subplot(1, 1, 1);     axc.hold(True);
-    for prior_tag, tau_chars in zip(['2pt prior', '3pt prior'], tau_chars_list):
+    for prior_tag, tau_chars in zip(['2pt_prior', '3pt_prior'], tau_chars_list):
         axc.plot(ts[prior_tag], optControls[prior_tag]  , linewidth = 3)
         
 
-    ts = ts['2pt prior'];
+    ts = ts['2pt_prior'];
     axc.hlines(0, ts[0], ts[-1], linestyles='--')
     axc.legend(['2pt prior', '3pt prior'] ,
                loc='upper left')
@@ -710,7 +725,7 @@ def NtausBox(mu_sigma, Tf,
         solnfig.savefig(lfig_name, dpi=300)       
                               
      
-def PriorSpreadBox(mu_sigma, Tf, 
+def PriorSpreadBox(mu_sigma, Tf, Tfopt,
                    alpha_bounds = (-2,2), resimulate=False,
                    fig_name = 'PriorSpread'):
     
@@ -737,24 +752,17 @@ def PriorSpreadBox(mu_sigma, Tf,
             FBKDriver(tau_chars, tau_char_weights,
                       mu_sigma,
                       alpha_bounds=alpha_bounds,
-                      Tf=Tf,
+                      Tf=Tf, Tf_opt = Tfopt,
                       visualize_decsent = False,
-                      soln_save_name=soln_name);
-                      
-        'Visualize Regimes'
-        visualizeRegimes(tau_chars,
-                         mu_sigma,
-                         Tf,
-                         soln_name = soln_name)#                       fig_name= 'GradientAscent_Nt%d'%len(tau_chars) )#,  
-
+                      visualize_summary=True,
+                      soln_save_name = soln_name);
+       
         fbkSoln = FBKSolution.load(soln_name)
         
         ts[prior_tag] = fbkSoln._Solver._ts;
         optControls[prior_tag] =   fbkSoln._cs_iterates[-1] 
                         
         cmin, cmax = [x for x in fbkSoln._alpha_bounds]
-    
-    
     
     '''CONTROL FIGURE'''
     solnfig = figure(figsize=(17,6))
@@ -767,6 +775,7 @@ def PriorSpreadBox(mu_sigma, Tf,
 
     ts = ts[priorTags[0]];
     axc.hlines(0, ts[0], ts[-1], linestyles='--')
+    axc.vlines(Tfopt, cmin, cmax, linestyles='--')
     axc.legend(priorTags ,
                loc='upper left')
     axc.set_xlim(ts[0], ts[-1]);
@@ -791,18 +800,19 @@ def PriorSpreadBox(mu_sigma, Tf,
            
     
 
-def OptimizerICsBox(mu_sigma, Tf=12,
-                  alpha_bounds = (-2,2),
-                   resimulate=True):
-    
-    '''Check whether starting the optiizer in different ICs result in the same final Opt Control
-    CONCLUSION: Yep...!!!
+def OptimizerICsBox(mu_sigma, Tf=12, Tf_opt = 8,
+                    alpha_bounds = (-2,2),
+                    resimulate=True,
+                    fig_name='OptimizerICs'):
+    '''Check whether starting the optimizer in different ICs result in the same final Opt Control
     '''
     Ntaus = 2
     tau_chars_list = [ linspace(0.25, 4.0, Ntaus), 
                        linspace(0.5, 2.0, Ntaus),
                        linspace(0.8,1.25, Ntaus)]
     prior_tags = [ 'wide_prior', 'medium_prior', 'concentrated_prior'] 
+    
+    prior_titles = dict(zip(prior_tags, ['Wide Prior', 'Medium Prior', 'Concentrated Prior']))
     
 #    tau_chars_list = tau_chars_list[ 2:   ]
 #    prior_tags = prior_tags[2:  ] 
@@ -812,8 +822,9 @@ def OptimizerICsBox(mu_sigma, Tf=12,
     alpha_max  = 0.9*alpha_bounds[-1];  
     init_ts = linspace(0, Tf, 100);
     init_ts_cs_dict = {'zero' : [init_ts, zeros_like(init_ts)],
-                       'linear': [init_ts,  (alpha_max-alpha_min)* (init_ts/Tf ) + alpha_min ], #'zero': [init_ts, zeros_like(init_ts)], #'zero': [init_ts, zeros_like(init_ts)],
-                       'cos': [init_ts,  alpha_max*cos(2*pi*init_ts/Tf)]} 
+                       'linear': [init_ts,  (alpha_max-alpha_min)* (init_ts/Tf_opt ) + alpha_min ],
+                       'cos': [init_ts,  alpha_max*cos(2*pi*init_ts/Tf_opt)],
+                       'max': [init_ts, alpha_max*ones_like(init_ts)]} 
     
     'MAIN LOOP:'
     for tdx, (tau_chars, prior_tag) in enumerate(zip(tau_chars_list, 
@@ -828,46 +839,49 @@ def OptimizerICsBox(mu_sigma, Tf=12,
             soln_tag = prior_tag + init_tag;
              
             if resimulate:
-                'Solve'
-                lSolver, fs, ps, cs_iterates, J_iterates = \
-                    calculateOptimalControl(tau_chars, tau_char_weights,
-                                            mu_sigma,
-                                            Tf=Tf ,  
-                                            alpha_bounds=alpha_bounds,
-                                            initial_ts_cs = init_ts_cs, 
-                                            visualize=False)
-    
-                'Save'
-                (FBKSolution(tau_chars, tau_char_weights,
-                         mu_sigma, alpha_bounds,
-                         lSolver,
-                         fs, ps,
-                         cs_iterates, J_iterates)).save( soln_tag )
-
-                
-                         
-            visualizeRegimes(tau_chars, mu_sigma, Tf, soln_name = soln_tag)            
+                'Solve:'
+                FBKDriver(tau_chars, tau_char_weights, mu_sigma,
+                           Tf, Tf_opt, alpha_bounds,
+                            save_soln=True, soln_save_name = soln_tag,
+                            visualize_decsent=False, visualize_summary=False,
+                             init_ts= init_ts_cs[0], init_cs=init_ts_cs[1])
+            visualizeRegimes(tau_chars, mu_sigma, Tf, soln_name= soln_tag )
+            
             resultsDict[init_tag] =  FBKSolution.load( soln_tag )
         
         'Visualize per prior:'
-        figure(figsize=(17,12))
+        solnfig = figure(figsize=(17,12))
         for init_tag, fbkSoln in resultsDict.iteritems():
-            subplot(211); hold(True)
+            subplot(311); hold(True)
             plot(fbkSoln._Solver._ts,
-                  fbkSoln._cs_iterates[-1], label=init_tag)
+                  fbkSoln._cs_iterates[0],
+                  linewidth=3, label=init_tag)
             legend(loc='lower right');
-            subplot(212); hold(True);
-            plot(-array(fbkSoln._J_iterates), 'x-', label=init_tag);
-            legend();
-            print fbkSoln._J_iterates, init_tag
-        title(prior_tag);
-        
-     
+            title('Initial Guesses for the Control', fontsize=xlabel_font_size);
+            
+            subplot(312); hold(True)
+            plot(fbkSoln._Solver._ts,
+                  fbkSoln._cs_iterates[-1],
+                  linewidth=3, label=init_tag)
+            title('Optimal Solution for the Control', fontsize=xlabel_font_size);
+#            legend(loc='lower right');
+            
+            subplot(313); hold(True);
+            plot(-array(fbkSoln._J_iterates), 
+                 'x-', markersize=3, linewidth=2, label=init_tag);
+            legend(loc='lower right');
+            title('Objective Evolution', fontsize=xlabel_font_size);
+#            
+        '''save?'''    
+        if None != fig_name:
+            lfig_name = os.path.join(FIGS_DIR, fig_name + prior_tag + '.pdf')
+            print 'saving to ', lfig_name
+            solnfig.savefig(lfig_name, dpi=300)       
+   
 
-def KnownParametersBox( Tf=12,
+def KnownParametersBox( Tf=12,Tfopt=8,
                         alpha_bounds = (-2,2),
-                   resimulate=True):
-    
+                        resimulate=True):
     '''Check whether varying mu,sigma has a significant impact on the 
     optimal control 
     CONCLUSION: Well, it only works for some mu, sigmas (the closer to 0,1 the better...!!!
@@ -882,39 +896,30 @@ def KnownParametersBox( Tf=12,
     param_tags = ['munegative', 'musmallperturb', 'muthresh',
                   'lownoise', 'sigmasmallperturb', 'highnoise']  
     
-    alpha_min  = 0.9*alpha_bounds[0];     
-    alpha_max  = 0.9*alpha_bounds[-1];  
-    init_ts_cs = [linspace(0, Tf, 100),
-                   (alpha_max-alpha_min)* (linspace(0, Tf, 100)/Tf ) + alpha_min ] 
-    
+   
     'MAIN LOOP:'
     resultsDict = {};
     for tdx, (mu_sigma, param_tag) in enumerate(zip(mu_sigma_list, 
                                                      param_tags)):
         
         print tdx,':', param_tag, '\t', mu_sigma[0], mu_sigma[-1]
-        
-         
-        soln_tag = param_tag ;
+        soln_tag = param_tag;
+        init_ts = linspace(0, Tf, 100);
          
         if resimulate:
             'Solve'
-            lSolver, fs, ps, cs_iterates, J_iterates = \
-                calculateOptimalControl(tau_chars, tau_char_weights,
-                                        mu_sigma,
-                                        Tf=Tf ,  
-                                        alpha_bounds=alpha_bounds,
-                                        initial_ts_cs = init_ts_cs, 
-                                        visualize=False)
-
-            'Save'
-            (FBKSolution(tau_chars, tau_char_weights,
-                     mu_sigma, alpha_bounds,
-                     lSolver,
-                     fs, ps,
-                     cs_iterates, J_iterates)).save( soln_tag )
-
-#        visualizeRegimes(tau_chars, mu_sigma, Tf, soln_name = soln_tag)            
+            FBKDriver(tau_chars, tau_char_weights,
+                      mu_sigma,
+                      alpha_bounds=alpha_bounds,
+                      Tf=Tf,Tf_opt=Tfopt,
+                      soln_save_name = soln_tag,
+                      visualize_decsent = False,
+                      visualize_summary = False,
+                      init_ts = init_ts,
+                      init_cs =   alpha_bounds[1]*cos(2*pi*init_ts/Tf_opt) );
+              
+             
+        visualizeRegimes(tau_chars, mu_sigma, Tf, soln_name = soln_tag)            
         resultsDict[param_tag] =  FBKSolution.load( soln_tag )
             
                      
@@ -923,19 +928,21 @@ def KnownParametersBox( Tf=12,
     figure(figsize=(17,12))
     for tag, fbkSoln in resultsDict.iteritems():
         subplot(211); hold(True)
-        plot(fbkSoln._Solver._ts,
-              fbkSoln._cs_iterates[-1], label= tag)
+        plot(fbkSoln._Solver._ts,  fbkSoln._cs_iterates[-1], 
+             label= tag , linewidth = 3)
         legend(loc='lower right');
+        
         subplot(212); hold(True);
-        plot(-array(fbkSoln._J_iterates), 'x-', label=tag);
+        plot(-array(fbkSoln._J_iterates),
+              'x-', label=tag, linewidth = 2);
         legend();
         
         print  tag, fbkSoln._J_iterates[0], fbkSoln._J_iterates[-1]
     title('Different Known Params');
     
 def Workbox():
-    Tf =  20;
-    Tfopt = Tf/2;
+    Tf =  18;
+    Tfopt = 12;
     
     alpha_bounds = (-2., 2.);
     mu_sigma = [0.0, 1.0]    
@@ -954,10 +961,10 @@ def Workbox():
           
 if __name__ == '__main__':
     from pylab import *
-    Tf =  5;
+    Tf = 15; Tf_opt=10;
     alpha_bounds = (-2., 2.);    
     tau_chars = linspace(0.5, 2, 2);
-    tau_chars = linspace(.25, 4, 2);
+    tau_chars = linspace(0.25, 4, 2);
     tau_char_weights = ones_like(tau_chars) / len(tau_chars)
     
     mu_sigma = [0., 1.] 
@@ -966,13 +973,13 @@ if __name__ == '__main__':
  
     
     'Sandbox to play around with and calibrate pieces of the puzzle:'
-    Workbox(); 
+#    Workbox(); 
  
     'Solve a full Gradient Descent + (save+visualize)'
 #    FBKDriver(tau_chars, tau_char_weights,
 #              mu_sigma,
 #              alpha_bounds=alpha_bounds,
-#              Tf=Tf );   
+#              Tf=Tf, Tf_opt = Tf_opt );   
     
     'Visualize Regimes'
 #    visualizeRegimes(tau_chars,
@@ -992,15 +999,17 @@ if __name__ == '__main__':
 #                       fig_name='SweepSwitchpoint_wide' )#  
     
    
-    '''sweep over the number of taus (shape of the prior)'''
-#    NtausBox(mu_sigma, Tf, alpha_bounds=alpha_bounds,
-#             resimulate=False);
+    '''Is there a difference between the number of taus (shape of the prior, >2 moments)
+    Conclusion: No significant difference'''
+    NtausBox(mu_sigma, Tf, alpha_bounds=alpha_bounds,
+             resimulate=True);
              
 
-    '''check if there is a difference between a wide spread prior vs.
+    '''Is there a difference between a wide spread prior vs.
        a concentrated prior for the Optimal Stimulation:
-      Conclusion: There is!'''
-#    PriorSpreadBox(mu_sigma, Tf, alpha_bounds, resimulate=False)
+      Conclusion: There seems to be some difference!'''
+#    PriorSpreadBox(mu_sigma, Tf, Tf_opt,
+#                   alpha_bounds, resimulate=False)
  
     
     'Check effect of varying optimizer ICs:'
@@ -1008,7 +1017,7 @@ if __name__ == '__main__':
 
 
     '''Check effect of varying mu, sigma'''
-#    KnownParametersBox(resimulate=False)
-    
+#    KnownParametersBox(resimulate=True)
+
 
     show();

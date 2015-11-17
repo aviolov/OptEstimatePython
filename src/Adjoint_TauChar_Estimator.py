@@ -936,7 +936,7 @@ def estimateHarnessSandbox(Tf, Npaths = 10, Npaths_to_visualize = 4,
         print 'saving to ', lfig_name
         savefig(lfig_name)
 
-
+'Post process results from Batch Estimation:'
 def postAnalysis(Nblocks, Nhits, simPs,
                  fig_name=None):
     
@@ -1009,6 +1009,83 @@ def postAnalysis(Nblocks, Nhits, simPs,
         the_file.write(latex_string)
         print 'Latex written to ', latex_filename
        
+'''Inspect cases where the Estimation went great and where it went really bad - 
+what is the differnece?'''
+def investigateSingleBlockEstimation(Nblocks, Nhits, simPs, 
+                                     fbkSoln, fig_name=None):
+    
+    #Load:
+    simPaths = SimulationPaths.load([Nblocks, Nhits, simPs.mu, simPs.tau_char, simPs.sigma, ''])
+    
+    betaEsts = simPaths.betaEsts;
+    
+    c_keys = simPaths.alphasDict.keys();
+    figure(); hold(True)
+    for c_key in c_keys:
+            plot(simPaths.sim_ts, simPaths.alphasDict[c_key], label=c_key);
+    legend();
+    print c_keys
+    
+    opt_idx = c_keys.index('opt');
+    
+    tau_ests = 1./betaEsts[opt_idx];
+    worst_est_idx = argmax(abs(tau_ests - simPaths.simParams.tau_char));
+    best_est_idx  = argmin(abs(tau_ests - simPaths.simParams.tau_char));
+    
+    print 'Worst tau estimate = ', tau_ests[worst_est_idx];
+    print 'Best tau estimate = ', tau_ests[best_est_idx];
+    
+    lSolver = fbkSoln._Solver;
+    
+    alphas = simPaths.alphasDict['opt'];
+    
+    aply_alphas = interp(lSolver._ts, simPaths.sim_ts, alphas)
+    gBad  = lSolver.solve_hittime_distn_per_parameter(tau_ests[worst_est_idx],
+                                          [simPaths.simParams.mu, simPaths.simParams.sigma],
+                                          aply_alphas)
+    gTrue = lSolver.solve_hittime_distn_per_parameter(simPaths.simParams.tau_char,
+                                          [simPaths.simParams.mu, simPaths.simParams.sigma],
+                                          aply_alphas)
+    
+    
+    hTbad = simPaths.thits_blocks[opt_idx,worst_est_idx,:];
+    hTgood = simPaths.thits_blocks[opt_idx,best_est_idx,:];
+      
+      
+    figure(); hold(True)
+    subplot(211); plot(lSolver._ts, aply_alphas);
+    subplot(212)
+    plot(lSolver._ts, gBad, 'r-', label='Distribution using Poorly estimated tau')
+    plot(lSolver._ts, gTrue, 'b-', label='True Distribution')
+    
+    'Visualize it:'
+    bins = arange(0, lSolver.getTf(), 0.1);
+    figure(figsize = (17, 8 ) );
+    subplot(211); hold(True)
+    hist(hTbad, bins, normed=True);
+    title('The \'bad\' data-sample (tau_est = %.2f)'%tau_ests[worst_est_idx],
+          fontsize = xlabel_font_size)
+    plot(lSolver._ts, gBad, 'r-',
+          label='Distribution using Poorly estimated tau',linewidth=3)
+    plot(lSolver._ts, gTrue, 'g-', label='True Distribution',linewidth=3)
+    legend(loc='upper left',prop={'size':16})
+    
+    subplot(212); hold(True)
+    hist(hTgood, bins, normed=True);
+    title('The \'good\' data-sample (tau_est = %.2f)'%tau_ests[best_est_idx],
+          fontsize = xlabel_font_size)
+    
+    plot(lSolver._ts, gBad, 'r-', label='Distribution using Poorly estimated tau',linewidth=3)
+    plot(lSolver._ts, gTrue, 'g-', label='True Distribution',linewidth=3)
+    
+    
+    lfig_name = os.path.join(FIGS_DIR,
+                                'Adjoint_TauChar_Estimator_good_vs_bad_estimates_Nh%d.pdf'%(Nhits))
+                                   
+    print 'saving to ', lfig_name
+    savefig(lfig_name,dpi=300)    
+    
+    
     
     
 #def latexifyResults(Npaths = 1000, Tfs = [8, 16,32] ):
@@ -1155,19 +1232,25 @@ if __name__ == '__main__':
 #    estimatorWorkbench(simPs, fbkSoln)  
   
 
-    '''BATCH Parameter Estimation:''' 
-#    for Nh in array( [1e5] ).astype(int) :
-    for Nh in array( [ 1e2  , 1e3, 1e4, 1e5 ]).astype(int): 
-#    for Nh in array( [1e2, 1e3 ]).astype(int): 
-        Nb = N_all_hits // Nh;
-        'Estimate tau_char:'       
-        estimateHarness(simPs, 
-                        FBKSolution.load('BatchEstimate_wide-prior'),
-                        Nblocks = Nb, 
-                        Nhits = Nh,
-                        reestimate=False) 
+#    '''BATCH Parameter Estimation:''' 
+##    for Nh in array( [1e5] ).astype(int) :
+#    for Nh in array( [ 1e2  , 1e3, 1e4, 1e5 ]).astype(int): 
+##    for Nh in array( [1e2, 1e3 ]).astype(int): 
+#        Nb = N_all_hits // Nh;
+#        'Estimate tau_char:'       
+#        estimateHarness(simPs, 
+#                        FBKSolution.load('BatchEstimate_wide-prior'),
+#                        Nblocks = Nb, 
+#                        Nhits = Nh,
+#                        reestimate=False) 
          
 
+    'Investigate when the estimation goes horribly wrong and when it goes really good'
+    for Nh in [1e3, 1e4]:
+        investigateSingleBlockEstimation(Nblocks = N_all_hits//Nh,   Nhits = Nh, simPs=simPs, 
+                                          fbkSoln = FBKSolution.load('BatchEstimate_wide-prior'))
+    
+    
     '''The sweep through beta /sigma'''
 #    BetaSigmaSweepHarness()
     

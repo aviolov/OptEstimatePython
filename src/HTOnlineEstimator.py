@@ -15,14 +15,16 @@ from scipy import interpolate
 #import ext_fpc
 from HitTime_MI_Beta_Estimator import SimulationParams
 
-from AdjointSolver import FPAdjointSolver, calculateOptimalControl,\
-    xlabel_font_size
+from AdjointSolver import FPAdjointSolver, xlabel_font_size
+from AdjointOptimizer import AdjointOptimizer
 from scipy.interpolate.interpolate import interp1d
 from TauParticleEnsemble import TauParticleEnsemble
 
 RESULTS_DIR = '/home/alex/Workspaces/Python/OptEstimate/Results/HTOnlineEstimator/'
 FIGS_DIR    = '/home/alex/Workspaces/Latex/OptEstimate/Figs/HTOnlineEstimator'
 
+import time
+from multiprocessing import Process, Lock
 import os
 for D in [FIGS_DIR, RESULTS_DIR]:
     if not os.path.exists(D):
@@ -33,44 +35,85 @@ class Stimulator():
         pass    
     
 class MIStimulator(Stimulator):
-    def __init__(self,  mu_sigma, alpha_bounds=[-5,5]): 
+    def __init__(self,  mu_sigma, reduce_to_2pt_prior=True, alpha_bounds=[-2,2]): 
         self.mu_sigma = mu_sigma;
         self.alpha_bounds = alpha_bounds;
-#        self.current_ts = array([0,1]) ;
-#        self.current_a_opt = zeros_like(self.current_ts);
+        self.reduce_to_2pt_prior = reduce_to_2pt_prior;
         
-        self.init_ts     = array([0, 1]) ;
-        self.init_alpha  = zeros_like(self.init_ts);
-        
-        
+        'Record for all ts,alphas applied:'
         self.ts_aopts_Massif = []
+        
+    'Default Initial Control Guess for the Optimization Procedure'
+    def defaultInitialControl(self, ts, Tf_opt):
+        'By default return a '
+        alpha_max = self.alpha_bounds[1];
+        init_alpha =  alpha_max*cos(2*pi*ts/Tf_opt);
+        
+        'Punch it past the optimization-interval:'
+        init_alpha[where(ts>Tf_opt)] = alpha_max;
+        
+        return init_alpha;
+
+    'Get 2pt prior with same mean, variance as a thicker prior:'
+    def getReducedTausWeights(self, taus,weights):
+
+        if abs(1.0-sum(weights)) > 1e-4:
+            raise RuntimeError('getReducedTausWeights:: weights do NOT sum to 1')
+        
+        tau_mean = dot(taus, weights);
+        tau_std_dev = sqrt( dot(taus**2, weights) - tau_mean**2);
+        
+        'reset to mean \pm std-dev:'
+        taus = [tau_mean-tau_std_dev, tau_mean+tau_std_dev]
+        
+        weights = 0.5*ones_like(taus);
+         
+        return taus,weights; 
+                
+    'Calculate the Optimal Control given taus,weights'
+    def calculateOptimalControl(self, taus, weights, Tf,
+                                 init_ts_alpha= None):
+        Tf_opt = Tf*0.66;
+        
+        'Construct Initial Guess for the Control:'
+        if None == init_ts_alpha: 
+            if 0 == len(self.ts_aopts_Massif):
+                init_ts = arange(0, Tf, 0.01);
+                init_alpha = self.defaultInitialControl(init_ts, Tf_opt);
+                init_ts_alpha = [init_ts, init_alpha]
+            else:
+                init_ts_alpha = self.ts_aopts_Massif[-1];
+        
+        'Reduce to 2-pt?'
+        if self.reduce_to_2pt_prior:
+            taus,weights = self.getReducedTausWeights(taus,weights);
+        
+        'Construct Optimizer:'
+        lOptimizer = AdjointOptimizer(taus, weights, self.mu_sigma,
+                                      Tf, Tf_opt, 
+                                      alpha_bounds= self.alpha_bounds);
+                                    
+        'Main Optimization Call:'
+        lSolver, _, _, cs_iterates, _ = \
+                lOptimizer.basic_gradDescent(initial_ts_cs = init_ts_alpha,
+                                             K_max=20);
+        
+        'return ts,alpha_opt:'
+        return lSolver._ts, cs_iterates[-1]
+
     
-    def getStimulation(self, particleEnsemble, Tf, init_alpha = None): 
-        
-        if None == init_alpha: 
-            init_alpha = self.init_alpha;
-    
-        
-        ''' main inner call'''
-        S, fs, ps, alpha_iterations, J_iterations = calculateOptimalControl(particleEnsemble.taus, 
-                                        particleEnsemble.weights,
-                                        self.mu_sigma,
-                                        Tf,
-                                        alpha_bounds=self.alpha_bounds,
-                                        initial_ts_cs= [self.init_ts,
-                                                        init_alpha])
-        
-        a_opt = alpha_iterations[-1];
-        
-#        self.current_ts = S._ts;
-#        self.current_a_opt = a_opt;
+    'Compute the Stimulation given a particleEnsemble:'
+    def getStimulation(self, particleEnsemble, Tf, init_ts_alpha = None): 
+        ''' main inner call:'''
+        ts, a_opt = self.calculateOptimalControl(particleEnsemble.taus, 
+                                        particleEnsemble.weights,                                        
+                                        Tf, init_ts_alpha=init_ts_alpha)
         
         'Archive:'
-        self.ts_aopts_Massif.append([S._ts, a_opt])
+        self.ts_aopts_Massif.append([ts, a_opt])
         
         'Return:'
-        
-        return interp1d(S._ts, a_opt,
+        return interp1d(ts, a_opt,
                         bounds_error = False,
                         fill_value = a_opt[-1]);
                   
@@ -90,33 +133,42 @@ class RandomStimulator(Stimulator):
         
         
 def driverStimulators(savefig = False):
-    
     seed(28022011)
-    
-    ts = arange(.0, 2., .05)
+
+    Tf = 15.0;
+    ts = arange(.0, Tf, .01)
     
     mu_sigma = [.0,1.0];
     
-    mS = MIStimulator(mu_sigma)
+    'Stimulator Object:'
+    mSfull = MIStimulator(mu_sigma,reduce_to_2pt_prior=False);
+    mS2pt= MIStimulator(mu_sigma,reduce_to_2pt_prior=True);
+    
     rS = RandomStimulator(mu_sigma);
     
+    'Particle Ensembles:'
+    pE = TauParticleEnsemble(16);
+    pE.setLocationsUsingRange(0.5, 2);
     
-    Tf = 1.0;
-    
-    pE = TauParticleEnsemble(2);
-    pE.setLocationsUsingRange(.5, 2);
-    
-    mF = mS.getStimulation(pE, Tf); 
+    'Get stimulations:'
+    mF_full = mSfull.getStimulation(pE, Tf);
+    mF_2pt = mS2pt.getStimulation(pE,Tf);
     rF = rS.getStimulation()
     
     figure()
-    plot(ts, mF(ts), 'rx-', label='optimal')
+    plot(ts, mF_full(ts), 'bx-', label='optimal (full)')
     hold(True)
+    plot(ts, mF_2pt(ts), 'rx-', label='optimal (2pt)')
     plot(ts, rF(ts),  'gx-', label='random')
     legend()
     
-    figure();
-    plot(mS.current_ts, mS.current_a_opt, 'rx-')
+    figure(); hold(True)
+    for tag, mS in zip(['full opt', '2pt opt'],
+                       [mSfull, mS2pt]):
+        current_ts = mS.ts_aopts_Massif[0][0];
+        current_a_opt = mS.ts_aopts_Massif[0][1]; 
+        plot(current_ts,current_a_opt, 'x-', label=tag);
+    legend();
     
 
 class HTOnlineEstimator():
@@ -128,7 +180,7 @@ class HTOnlineEstimator():
                  init_range = [.25, 4],
                  Ntaus = 32,
                  alpha_bounds = [-5,5],
-                 MI_stimulation_time  = 10.0,
+                 MI_stimulation_time  = 15.0,
                  start_MIGD_from_rand_stim  = False,
                  update_stimulation_interval = 1):
         
@@ -170,7 +222,7 @@ class HTOnlineEstimator():
                                                   mu_sigma, 
                                                   num_std = 1.0)
             ''' very fine discretization for the likelihood solver '''
-            dx = 0.25 * FPAdjointSolver.calculate_dx(alpha_bounds,
+            dx = FPAdjointSolver.calculate_dx(alpha_bounds,
                                                     taus,
                                                mu_sigma, xmin)
             dt = FPAdjointSolver.calculate_dt(alpha_bounds, 
@@ -207,30 +259,33 @@ class HTOnlineEstimator():
         ''' get the stimulations '''
         if update_stimulus:
             print 'Re-calibrating stimulus!'
+            'New Random Stimulation:'
             self.randAlphaF = self.randStimulator.getStimulation();
             
-            alpha_init = None;
+            'New Controlled Stimulation:'
+            init_ts_alpha=None;
             if self.start_MIGD_from_rand_stim:
                 alpha_init = self.randAlphaF(self.miStimulator.init_ts);
+                init_ts_alpha = [self.miStimulator.init_ts, alpha_init]
             self.miAlphaF = self.miStimulator.getStimulation(self.miEnsemble,
                                                      self.MI_Stimulation_Time,
-                                                     alpha_init );
+                                                     init_ts_alpha=init_ts_alpha );
                                                      
-        
-        
-        '''run the HT simulation:'''
+        '''run the Hitting TIme simulation:'''
         thits = self.simulateSinglePath(self.miAlphaF, self.randAlphaF , 
                                         visualize=visualize)
+
         print 'latest hitting times: ', thits
         
+        'Store latest hitting times:'
         self.hitting_times.append(thits);
         
-        '''update particle ensembles'''
+        '''update particle ensembles:'''
         for th, alphaF, pEnsemble, massif in zip(thits, 
-                                  [ self.miAlphaF,  self.randAlphaF, lambda ts: zeros_like(ts)],
+                                  [self.miAlphaF,  self.randAlphaF, lambda ts: zeros_like(ts)],
                                   [self.miEnsemble, self.randEnsemble, self.zeroEnsemble],
                                   [self.miTausMassif, self.randTausMassif, self.zeroTausMassif]):
-        
+            
             tau_likelihood = self.calculateLikelihood(th, alphaF, pEnsemble,
                                                       visualize=visualize)
             
@@ -416,7 +471,7 @@ class HTOnlineEstimator():
                                                 self.Ntrials,
                                                 self.Nexperiments);
              
-        print 'saving path to ', file_name
+        print 'saving estimation run to ', file_name
         file_name = os.path.join(RESULTS_DIR, file_name )
         import cPickle
         dump_file = open(file_name, 'wb')
@@ -437,61 +492,63 @@ class HTOnlineEstimator():
         soln = cPickle.load(load_file)        
         return soln
 
+
 def driverMIOptimization():
-    lEstimator = HTOnlineEstimator.load('single_experiment_example');
+    raise RuntimeError('DEPRECATD')
+#    lEstimator = HTOnlineEstimator.load('single_experiment_example');
+#    
+#    taus_init = lEstimator.miTausMassif['taus'][0] 
+#    weights_init = lEstimator.miTausMassif['weights'][0] 
+#
+#    taus_final = lEstimator.miTausMassif['taus'][5]
+#    weights_final = lEstimator.miTausMassif['weights'][5] 
+#    
+#    print taus_init 
+#    print taus_final
+#    
+#    print weights_init
+#    print weights_final
+#    
+#    Tf =  10.0;
+#    
+#    ''' initial taus from zero'''
+#    S, fs, ps, alpha_iterations, Js = calculateOptimalControl(taus_init , 
+#                                                                weights_init,
+#                                                                [0,1],
+#                                                                    Tf,
+#                                            initial_ts_cs= [ array([0,1]) ,
+#                                                             zeros(2) ]); 
+#                                                             
+#    alpha_init =    alpha_iterations[-1]                                                      
+#    figure(figsize=(17,12)) ; hold(True)
+#    plot(S._ts,  alpha_init, 'b-', label='INit Taus from AlphaZero')
+#   
+#   
+#    ''' final taus from initial alpha'''
+#    S, fs, ps, alpha_iterations, Js = calculateOptimalControl(taus_final , 
+#                                                                weights_final,
+#                                                                [0,1],
+#                                                                Tf,
+#                                            initial_ts_cs= [ S._ts, 
+#                                                             alpha_init]); 
+#                                                             
+#                                                             
+#    plot(S._ts, alpha_iterations[-1], 'g-', label='Final Taus and AlphaOpt_1') 
+#    
+#    ''' final taus from zero alpha'''
+#    S, fs, ps, alpha_iterations, Js = calculateOptimalControl(taus_final , 
+#                                                                weights_final,
+#                                                                [0,1],
+#                                                                Tf,
+#                                                            initial_ts_cs= [ array([0,1]) ,
+#                                                                                zeros(2) ] ); 
+#                                                             
+#                                                             
+#    plot(S._ts, alpha_iterations[-1], 'r-', label='Final Taus from AlphaZero')                                                         
+#    legend(loc='lower left')
     
-    taus_init = lEstimator.miTausMassif['taus'][0] 
-    weights_init = lEstimator.miTausMassif['weights'][0] 
-
-    taus_final = lEstimator.miTausMassif['taus'][5]
-    weights_final = lEstimator.miTausMassif['weights'][5] 
     
-    print taus_init 
-    print taus_final
-    
-    print weights_init
-    print weights_final
-    
-    Tf =  10.0;
-    
-    ''' initial taus from zero'''
-    S, fs, ps, alpha_iterations, Js = calculateOptimalControl(taus_init , 
-                                                                weights_init,
-                                                                [0,1],
-                                                                    Tf,
-                                            initial_ts_cs= [ array([0,1]) ,
-                                                             zeros(2) ]); 
-                                                             
-    alpha_init =    alpha_iterations[-1]                                                      
-    figure(figsize=(17,12)) ; hold(True)
-    plot(S._ts,  alpha_init, 'b-', label='INit Taus from AlphaZero')
-   
-   
-    ''' final taus from initial alpha'''
-    S, fs, ps, alpha_iterations, Js = calculateOptimalControl(taus_final , 
-                                                                weights_final,
-                                                                [0,1],
-                                                                Tf,
-                                            initial_ts_cs= [ S._ts, 
-                                                             alpha_init]); 
-                                                             
-                                                             
-    plot(S._ts, alpha_iterations[-1], 'g-', label='Final Taus and AlphaOpt_1') 
-    
-    ''' final taus from zero alpha'''
-    S, fs, ps, alpha_iterations, Js = calculateOptimalControl(taus_final , 
-                                                                weights_final,
-                                                                [0,1],
-                                                                Tf,
-                                                            initial_ts_cs= [ array([0,1]) ,
-                                                                                zeros(2) ] ); 
-                                                             
-                                                             
-    plot(S._ts, alpha_iterations[-1], 'r-', label='Final Taus from AlphaZero')                                                         
-    legend(loc='lower left')
-    
-    
-
+'Show a single trial - that is a single hitting time with all stimulations:'
 def driverSingleTrial(fig_name = None, resimulate = True):          
     '''harness to try out  a single trial for the estimator'''
     simPs   = SimulationParams(tau_char = 1.)
@@ -499,15 +556,16 @@ def driverSingleTrial(fig_name = None, resimulate = True):
     
     if resimulate:        
         lEstimator = HTOnlineEstimator(simPs, Ntaus=32, alpha_bounds = [-3,3])
-    
+        
+        start = time.clock()
         lEstimator.runSingleTrial(visualize=True)
-#        
+        print('Single Trial Time = ', time.clock()-start, 's') 
+        
         lEstimator.save('single_trial_example')
         
     
     ''' Now reload and visualize'''
     lEstimator = HTOnlineEstimator.load('single_trial_example')
-    
     
     ''' VISUALIZE '''
     print lEstimator.miTausMassif
@@ -571,30 +629,36 @@ def driverSingleTrial(fig_name = None, resimulate = True):
         lfig_name = os.path.join(FIGS_DIR,
                                   fig_name + '_hittimes.pdf');
         print 'saving to ', lfig_name
-        ht_fig.savefig(lfig_name) 
+        ht_fig.savefig(lfig_name); 
+        
         
 
-def driverSingleExperiment(fig_name = None, resimulate = False):          
+def driverSingleExperiment(fig_name = None, resimulate = True):          
     ''' Run a single experiment for the Online Estimator using N trials and
         updating the particle ensemble in the process '''
     simPs = SimulationParams(tau_char = 1.)
-    Ntaus = 32 
-    Ntrials = 251
+    Ntaus = 32
+    Ntrials = 500
     seed(Ntrials)
-    
+
     experiment_tag ='Nts=%d_Ntrls=%d'%(Ntaus, Ntrials)
     save_file_name = 'single_experiment_example_%s'%experiment_tag
-    if resimulate:        
+    if resimulate:
+        start_time = time.clock();        
         lEstimator = HTOnlineEstimator(simPs,
                                         Ntrials = Ntrials,
                                         Ntaus=Ntaus,
                                         alpha_bounds = [-3,3],
                                         start_MIGD_from_rand_stim=False,
-                                        update_stimulation_interval=2)
-    
+                                        update_stimulation_interval=10)
+        
+        'main call:'
         lEstimator.runSingleExperiment( visualize=True )
-#        
+        
+        'save output:'        
         lEstimator.save(save_file_name)
+        
+        print 'Single Experiment Time = ', time.clock()-start_time, 's';
         
     
     ''' Now reload and visualize'''
@@ -611,16 +675,12 @@ def driverSingleExperiment(fig_name = None, resimulate = False):
    
     'visualize control evolution:'
     tsalphasMassif = lEstimator.miStimulator.ts_aopts_Massif;
-    
+
     cs_fig = figure(figsize = (17, 12));   
-    
-    pdx = 0
-    for idx, tsalphas in enumerate(tsalphasMassif ):
-        if mod(idx, 4) == 0:
-            pdx+=1;
-        subplot(2,1,pdx); hold(True);
-        plot(tsalphas[0], tsalphas[1], label='%d'%idx)
-        legend(loc='lower right');
+    for idx, tsalphas in enumerate(tsalphasMassif):
+        subplot(ceil(len(tsalphasMassif)/2), 2, 1+idx);
+        plot(tsalphas[0], tsalphas[1])
+        title('Control-Iteration:%d'%idx)
     xlabel(r'$t$', fontsize = xlabel_font_size)
     
     lfig_name = os.path.join(FIGS_DIR,
@@ -628,34 +688,74 @@ def driverSingleExperiment(fig_name = None, resimulate = False):
     print 'saving to ', lfig_name 
     cs_fig.savefig(lfig_name)     
         
-def driverBatchEstimate(resimulate = False):
-    Ntaus = 32;
-    simPs = SimulationParams();
-    Ntrials_list = arange(495, 511)
-#    Ntrials_list = arange(505, 508)
-    Ntrials_list = arange(508, 510)
-    print Ntrials_list
-    
-    base_fig_name = 'single_experiment_example'
-    for Ntrials in Ntrials_list:
-        seed(Ntrials)
-    
-        experiment_tag ='Nts=%d_Ntrls=%d'%(Ntaus, Ntrials)
-        save_file_name = 'single_experiment_example_%s'%experiment_tag
-        if resimulate:
-            lEstimator = HTOnlineEstimator(simPs,
-                                            Ntrials = Ntrials,
-                                            Ntaus=Ntaus,
-                                                alpha_bounds = [-3,3],
-                                                start_MIGD_from_rand_stim=False)
-        
-            lEstimator.runSingleExperiment(visualize=False)
    
-            lEstimator.save(save_file_name)
         
-        ''' Now reload and visualize'''
-        lEstimator = HTOnlineEstimator.load(save_file_name)
-        visualizeEstimation(lEstimator, simPs, fig_name = base_fig_name + experiment_tag);
+def driverBatchEstimate(resimulate = False,
+                        Ntaus = 32,
+                         Nexperiments=50,
+                          Ntrials = 500,
+                           simPs = SimulationParams(),
+                           save_base_name = 'single_experiment',
+                           multi_process_flag=True):
+    
+    'Main Computational Function:'
+    def singleExperimentProcess(experiment_idx, procLock):
+        'set seed'
+        seed(experiment_idx+1)
+    
+        experiment_tag = '%s_id%d'%(save_base_name, experiment_idx);
+        
+        'parametrize:'
+        lEstimator = HTOnlineEstimator(simPs,
+                                    Ntrials = Ntrials,
+                                    Ntaus=Ntaus,
+                                        alpha_bounds = [-3,3],
+                                        start_MIGD_from_rand_stim=False,
+                                        update_stimulation_interval=25)
+        'run:'
+        lEstimator.runSingleExperiment(visualize=False)
+        
+        'save to disk:'
+        procLock.acquire();
+        lEstimator.save(experiment_tag)
+        procLock.release();
+        'Return'
+     
+    'Main (re)simulation:'
+    if resimulate:
+        start = time.time()
+        procLock = Lock();
+        if multi_process_flag:
+            'Multi-Proc Implementation:'
+            Nprocs_at_a_time = 4
+            procs  = [];
+            procLock = Lock();
+            for experiment_idx in xrange(Nexperiments):
+                'Add to Queue:'
+                procs.append(Process(target=singleExperimentProcess,
+                                     args=(experiment_idx, procLock)) );
+                'start sub-process:' 
+                procs[-1].start();
+                
+                if 0 == mod(experiment_idx+1, Nprocs_at_a_time):
+                    'Barrier it (flush process queue):'                    
+                    for proc in procs:
+                        proc.join()
+                    'reset procs'
+                    procs = [];
+        else:
+            'Serial Implementation:'
+            for experiment_idx in xrange(Nexperiments):
+                singleExperimentProcess(experiment_idx, procLock);
+        
+        'Diagnose: (and return)'
+        print 'total batch compute time = ', time.time()-start, 's';
+                  
+    ''' Now reload and visualize'''
+#    for experiment_idx in xrange(Nexperiments):
+#        save_file_name = '%s_id%d'%(save_base_name, experiment_idx);
+#        lEstimator = HTOnlineEstimator.load(save_file_name)
+#        visualizeEstimation(lEstimator, simPs);
 
 def driverNarrowExperiment(fig_name = None, resimulate = True):          
     ''' Run a single experiment for the Online Estimator using N trials and
@@ -756,44 +856,51 @@ def visualizeEstimation(lEstimator, simPs, fig_name=None):
     print 'saving to ', lfig_name 
     ensemble_fig.savefig(lfig_name) 
       
-def visualizeAggregatedBatch(fig_name = 'aggregated_belief_distn'):
-    Ntaus = 32;
-    simPs = SimulationParams();
-    Ntrials_list = arange(495, 511)
-    print Ntrials_list
+def visualizeAggregatedBatch(fig_name = 'online_updated_prior',
+                             Ntaus = 32,
+                             Nexperiments=50,
+                             Nobs = 500,
+                             simPs = SimulationParams(),
+                             save_base_name = 'single_experiment'):
     
-    base_fig_name = 'single_experiment_example'
-    estimatorsList = [];
     
-    for Ntrials in Ntrials_list:
-        seed(Ntrials)
-    
-        experiment_tag ='Nts=%d_Ntrls=%d'%(Ntaus, Ntrials)
-        save_file_name = 'single_experiment_example_%s'%experiment_tag
-     
-        estimatorsList.append(HTOnlineEstimator.load(save_file_name))
+    estimatorsList = [];    
+    'Load Resutls:'
+    for experiment_idx in xrange(Nexperiments):
+        save_file_name =  '%s_id%d'%(save_base_name, experiment_idx);
+        estimatorsList.append(HTOnlineEstimator.load(save_file_name));
         
-    
+    'Gather Results:'   
     meanstdDict = {};
-    Nexp = len(estimatorsList);
+    mean_taus_Dict = {};
+    
     for tag in ['miTausMassif', 'randTausMassif', 'zeroTausMassif']:
-        Nobs = 495
-        m1_tau = zeros(Nobs)
+        m1_tau = zeros(Nobs);
         m2_tau = zeros(Nobs);
-        for lE in estimatorsList:
+        mean_taus_array= zeros( (Nobs, Nexperiments) );
+        for edx,lE in enumerate(estimatorsList):
             massif = getattr(lE, tag); 
-            taus = log( array( massif['taus'] )[0:Nobs] );
+            
+            taus = array( massif['taus'] )[0:Nobs];
+            log_taus = log( taus ) ;
             ws   =  array( massif['weights'][0:Nobs]  );
             
-            m1_tau += sum(taus*ws, 1);
-            m2_tau += sum(taus*taus*ws,1);
+            'Compute Mean:'
+            mean_taus_array[:, edx] = sum(taus*ws, 1); 
+            m1_tau +=  sum(log_taus*ws, 1);
+
+            m2_tau += sum(log_taus*log_taus*ws,1);
         
-        mean_tau = m1_tau / Nexp;
+        mean_tau = m1_tau / Nexperiments;
                 
-        std_tau = sqrt( m2_tau/Nexp - mean_tau*mean_tau );
+        std_tau = sqrt( m2_tau/Nexperiments - mean_tau*mean_tau );
         meanstdDict[tag] = [mean_tau, std_tau];
-    
+        mean_taus_Dict[tag] = mean_taus_array;
+     
+     
+    'Visualize Ensemble:'
     ensemble_fig = figure(figsize=(17,8)) 
+    hold(True)
     tks = arange(1, Nobs+1)  
     for tag, color in zip(['miTausMassif', 'randTausMassif', 'zeroTausMassif'],
                            ['r', 'g', 'b']):
@@ -802,44 +909,83 @@ def visualizeAggregatedBatch(fig_name = 'aggregated_belief_distn'):
         plot( tks, mean_tau  + 2*std_tau, color + '--');
         plot( tks, mean_tau  - 2*std_tau, color + '--');
     xlim([0, Nobs])
-    title(r'Empirical CIs for $\rho(log(\tau))$',
+    title(r'Empirical Confidence Intervals of $\rho(log(\tau))$',
           fontsize = xlabel_font_size);
     xlabel('$k$', fontsize = xlabel_font_size);
-    ylabel(r'log mean $\pm$ 2 stdev', fontsize = xlabel_font_size);
+    ylabel(r'$log(\tau)$', fontsize = xlabel_font_size);
     ylim([-1.8, 1.8]);
     plot(tks, log( estimatorsList[0].simParams.tau_char*ones_like(tks)), 'k-');
     legend()
      
-    lfig_name = os.path.join(FIGS_DIR,
-                              fig_name + '_aggregated_ensemble_distn_evolution.pdf');
-    print 'saving to ', lfig_name 
-    ensemble_fig.savefig(lfig_name)     
+     
+    'Visualize Quantiles:'
+    quantile_fig = figure(figsize=(17,8)); hold(True)
+    tks = arange(1, Nobs+1)  
+    for tag, color in zip(['miTausMassif', 'randTausMassif', 'zeroTausMassif'],
+                           ['r', 'g', 'b']):
         
+        mean_tau_array = mean_taus_Dict[tag] 
+        
+        plot( tks, median(mean_tau_array, 1), color + 'x-');
+        plot( tks, amin(mean_tau_array, 1), color + '--', label=tag);
+        plot( tks, amax(mean_tau_array, 1), color + '--');
+    
+    xlim([0, Nobs])
+    title(r'Min/Median/Max $\hat{\tau}$',
+          fontsize = xlabel_font_size);
+    xlabel('$k$', fontsize = xlabel_font_size);
+    ylabel(r'$\hat{E[\tau]}$', fontsize = xlabel_font_size);
+    ylim([0, 3]);
+    plot(tks,  estimatorsList[0].simParams.tau_char*ones_like(tks) , 'k-');
+    legend()
+      
+    
+    mifig = figure(figsize=(17,8)); hold(True)
+    tks = arange(1, Nobs+1)  
+    mean_tau_array = mean_taus_Dict['miTausMassif']  
+    for cdx in xrange( shape(mean_tau_array)[1] ):
+        plot( tks, mean_tau_array[:, cdx], '--'); 
+    
+    'Save Figs:'
+    if None != fig_name:
+        lfig_name = os.path.join(FIGS_DIR,
+                                  fig_name + '_mean_aggregated_ensemble.pdf');
+        print 'saving to ', lfig_name 
+        ensemble_fig.savefig(lfig_name)     
+        
+        lfig_name = os.path.join(FIGS_DIR,
+                                  fig_name + '_quantiles_mean_per_experiment.pdf');
+        print 'saving to ', lfig_name 
+        quantile_fig.savefig(lfig_name)
+    else:
+        print 'Not Saving Figs!'
+       
     
 if __name__ == '__main__':
     from pylab import *
     
     '''test the random/mi-optimal stimulators'''
 #    driverStimulators()
-
-
-    ''' test the MI Optimization process '''
-#    driverMIOptimization();
     
-    ''' Do a basic single trial '''    
+    ''' Do a basic single trial (single hitting-time) '''    
 #    driverSingleTrial(fig_name = 'single_trial_example')
 
     ''' Do a basic single experiment '''
-#    driverSingleExperiment( fig_name = 'single_experiment_example' )
+#    driverSingleExperiment(fig_name = 'single_experiment_example')
     
+    ''' test the MI Optimization process '''
+#    driverMIOptimization();
+
     ''' batch a bunch of experiments '''
-#    driverBatchEstimate( )
+    Nt = 32; Ne=8; Nobs=2;
+    driverBatchEstimate(resimulate=True,Ntaus=Nt, Nexperiments=Ne, Ntrials=Nobs,
+                        multi_process_flag=True)
     
     ''' visualize aggregated belief'''
-#    visualizeAggregatedBatch()
+    visualizeAggregatedBatch(fig_name=None, Ntaus=Nt, Nexperiments=Ne, Nobs=Nobs)
 
     ''' narrow prior estimate'''
-    driverNarrowExperiment()
+#    driverNarrowExperiment()
     
         
     show();

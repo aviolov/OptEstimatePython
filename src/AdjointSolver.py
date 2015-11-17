@@ -144,13 +144,32 @@ class FPAdjointSolver():
         return ICs
     
     def _getAdjointBCs(self, tau_char_weights, fs, sigma):            
-        di_x_fs  = -squeeze(fs[:, -1,:] - fs[:, -2,:]) /\
-                           self._dx;                           
-                           
-#        di_x_fs = -diff(sum(fs, axis=1), axis=1);        
+    
+#        return self._getOldWrongBCs(tau_char_weights ,fs);
+    
+        return self._getNewMaybeRightBCs(tau_char_weights, fs)
+    
+    
+    def _getNewMaybeRightBCs(self, tau_char_weights, fs ):    
+        di_x_fs  = -squeeze(fs[:, -1,:] - fs[:, -2,:]) / self._dx;    
 
         di_x_fs_mean = dot(tau_char_weights, di_x_fs);
         
+        dixfs_over_dixfs_mean_bayesian = di_x_fs / di_x_fs_mean;
+        ''' deal with 0/0:'''
+        zero_ids = di_x_fs_mean<1e-8;        
+        dixfs_over_dixfs_mean_bayesian[:, zero_ids] = 1.;
+        
+        '''return'''
+        bcs = -log(dixfs_over_dixfs_mean_bayesian);
+        
+        return bcs
+    
+    def _getOldWrongBCs(self, tau_char_weights, fs ):    
+        di_x_fs  = -squeeze(fs[:, -1,:] - fs[:, -2,:]) /\
+                           self._dx;    
+
+        di_x_fs_mean = dot(tau_char_weights, di_x_fs);
         
         dixfs_over_dixfs_mean_bayesian = di_x_fs / di_x_fs_mean;
         ''' deal with 0/0:'''
@@ -160,15 +179,6 @@ class FPAdjointSolver():
         '''return'''
         bcs = -log(dixfs_over_dixfs_mean_bayesian) - 1 + dixfs_over_dixfs_mean_bayesian
         
-#        figure();
-#        subplot(211);
-#        plot(di_x_fs[0,:]);
-#        hold(True);
-#        plot(di_x_fs[1,:]); legend(['t.5', 't2'])
-#        subplot(212);
-#        plot(di_x_fs_mean)
-#        title('Marginal fs')
-
         return bcs
 
     ###########################################
@@ -250,16 +260,16 @@ class FPAdjointSolver():
         var_fs = fs[:, 1:,:];
         
         'Compute  int (di_x p \cdot f)'
-        dxp_times_f = -squeeze( sum(var_fs*dxps, axis=1) )
+        dxp_times_f = squeeze( sum(var_fs*dxps, axis=1) )
 
         'Grad_H = sum w_t \cdot  int (\di_x p \cdot f)'
-        grad_H = dot(tau_char_weights, dxp_times_f);
+        grad_H = -dot(tau_char_weights, dxp_times_f);
             
         return grad_H;
         
     def calcObjective(self, tau_char_weights, fs):
         '''Calculate the Mutual Information between the hitting-time
-           gs (\di_x fs_{xthresh}) and the prior'''
+           gs (\di_x fs_{xthresh}) distribution and the prior (discrete weights)'''
         xs, ts = self._xs, self._ts;
         dx, dt = self._dx, self._dt;
                 
@@ -717,7 +727,7 @@ def visualizeAdjointSolver(tb = [.6, 1.25], Tf = 1.5, energy_eps = .001, alpha_b
 
 
 
-
+'''relic from the OptSpike project:'''
 def stylizedVisualizeForwardAdjoint(tb = [.6, 1.25], Tf = 1.5, energy_eps = .001, alpha_bounds = (-2., 2.),
                                         fig_name = None):
     mpl.rcParams['figure.subplot.left'] = .1
@@ -757,105 +767,7 @@ def stylizedVisualizeForwardAdjoint(tb = [.6, 1.25], Tf = 1.5, energy_eps = .001
     print 'saving to', file_name
     savefig(file_name)
     
-    
-def compareControlTerm(tb = [.6, 1.25], Tf = 1.5, energy_eps = .001, alpha_bounds = (-2., 2.),
-                           fig_name = None):
-    ' This is a relic from the OPtSpike PRoject - what does it do here???'
-    
-    mpl.rcParams['figure.subplot.left'] = .1
-    mpl.rcParams['figure.subplot.right'] = .95
-    mpl.rcParams['figure.subplot.bottom'] = .1
-    mpl.rcParams['figure.subplot.top'] = .9
-        
-    xmin = FPAdjointSolver.calculate_xmin(alpha_bounds, tb, num_std = 1.0)
-    dx = FPAdjointSolver.calculate_dx(alpha_bounds, tb, xmin)
-    dt = FPAdjointSolver.calculate_dt(alpha_bounds, tb, dx, xmin, factor = 4.)
-    
-    deterministic_ts, deterministic_control = deterministicControlHarness(tb, Tf, energy_eps, alpha_bounds)
-
-    #Set up solver
-    #TODO: The way you pass params and the whole object-oriented approach is silly. Tf changes for each solve and atb don't, so maybe rething the architecture!!!
-    S = FPAdjointSolver(dx, dt, Tf, xmin)
-    
-    ts = S._ts;
-    
-    alphas = interp(ts, deterministic_ts, deterministic_control)
-    
-    #the v solution:
-    xs, ts, fs, ps =  S.solve(tb, alphas, alpha_bounds[1], visualize=False)
-    
-    
-    #the gradients
-    dxfs = diff(fs, axis=0)/S._dx;
-    dxps = diff(ps, axis=0)/S._dx;
-    
-    pdxf = sum(ps[1:,:]*dxfs, axis=0) 
-    
-    pf_minus_dxpf = (ps[-1,:]*fs[-1,:] - ps[0,:]*fs[0,:]) - sum(fs[1:,:]*dxps, axis=0)  
-       
-    figure(); hold(True)
-    plot(ts, pdxf, 'b', label=r'$\int p \nabla_x f$')
-    plot(ts, pf_minus_dxpf, 'r', label=r'$ pf|_{x-}^{x+} - \int f \nabla_x p$')
-    legend(loc='upper left')
-    
-    figure(); hold(True)
-    plot(xs[1:], dxfs[:, 1], 'b', label=r'$\nabla_x \, f$')
-    plot(xs[1:], dxps[:, 1], 'g', label=r'$\nabla_x \, p$'); xlabel('x')
-    legend(loc='upper left')
-        
-
-def calcGradH(tb = [.6, 1.25], Tf = 1.5, energy_eps = .001, alpha_bounds = (-2., 2.),
-                           fig_name = None):
-
-        
-    xmin = FPAdjointSolver.calculate_xmin(alpha_bounds, tb, num_std = 1.0)
-    dx = FPAdjointSolver.calculate_dx(alpha_bounds, tb, xmin)
-    dt = FPAdjointSolver.calculate_dt(alpha_bounds, tb, dx, xmin, factor = 4.)
-    
-    deterministic_ts, deterministic_control = deterministicControlHarness(tb, Tf, energy_eps, alpha_bounds)
-
-    #Set up solver
-    #TODO: The way you pass params and the whole object-oriented approach is silly. Tf changes for each solve and atb don't, so maybe rething the architecture!!!
-    S = FPAdjointSolver(dx, dt, Tf, xmin)
-    
-    ts = S._ts;
-    
-    alphas = interp(ts, deterministic_ts, deterministic_control)
-    
-    #the f,p,J solution:
-    xs, ts, fs, ps, J, minus_grad_H =  S.solve(tb, alphas, alpha_bounds[1], energy_eps, visualize=False)
-    
-    STEP_SIZE = .05;
-    
-    e = ones_like(alphas); alpha_min, alpha_max = alpha_bounds[0], alpha_bounds[1]
-    alpha_next = alphas + minus_grad_H  * STEP_SIZE
-    alpha_bounded_below = amax(c_[alpha_min*e, alpha_next], axis=1)
-            
-    alpha_next = amin(c_[alpha_max*e, alpha_bounded_below], axis=1)
-    
-    #VISUALIZE:
-    mpl.rcParams['figure.subplot.left'] = .1
-    mpl.rcParams['figure.subplot.right'] = .95
-    mpl.rcParams['figure.subplot.bottom'] = .1
-    mpl.rcParams['figure.subplot.top'] = .9
-    figure(); hold(True)
-    
-#    plot(ts, grad_H, 'b', label=r'$\nabla_\alpha \, H$')
-    plot(ts, minus_grad_H, 'g', label=r'$-\nabla_\alpha \, H$', linewidth = 4); 
-    plot(ts, alphas, 'r--', label=r'$\alpha_0(t)$', linewidth = 4);
-    plot(ts, alpha_next, 'b--', label=r'$\alpha_1(t)$', linewidth = 4);
-    ylabel(r'$\alpha$', fontsize=24);xlabel('$t$', fontsize=24);    
-    legend(loc='upper left')
-    title('First Control Iteration', fontsize=36)
-    
-    if None != fig_name:
-        get_current_fig_manager().window.showMaximized()
-        file_name = os.path.join(FIGS_DIR, fig_name + '.png')
-        print 'saving to ', file_name
-        savefig(file_name);
-        
-    print 'J_0 = ', J
-      
+ 
     
 def calculateOutflow(tb = [.6, 1.25], Tf = 1.5, energy_eps = .001, alpha_bounds = (-2., 2.)):
     '''What does this function do???!!!!'''
@@ -925,7 +837,7 @@ def timeAdjointSolver(tb = [.5, 1.25], Tf = 1.5, energy_eps = .1, alpha_bounds =
 ###############################################################################
 def SingleSolveHarness(tau_chars, tau_char_weights, mu_sigma,  
                        alpha_bounds=(-2,2),
-                       Tf = 16, ts=None) :
+                       Tf = 16, ts=None, Tfopt=10) :
     print('Model Params: m,b, ts', mu_sigma, tau_chars)
     'Define Solver:'
     xmin = FPAdjointSolver.calculate_xmin(alpha_bounds, tau_chars , mu_sigma,  num_std= 1.0)
@@ -934,17 +846,18 @@ def SingleSolveHarness(tau_chars, tau_char_weights, mu_sigma,
                                       dx, xmin, factor = 4.0)
     
     'Warning: Hard-coding dx,dt:'
-    dx = 0.04;
-    dt = 0.01;
+    dx = 0.02;
+    dt = 0.005;
     
     print 'Solver params: xmin, dx, dt', xmin,dx,dt
     print 'Control bounds', alpha_bounds    
-    S = FPAdjointSolver(dx, dt, Tf, xmin)
+    S = FPAdjointSolver(dx, dt, Tf, xmin, Tf_optimization=Tfopt)
     print 'Tf, Tf_opt', S.getTf(), S.Tf_optimization;
     
     'Define Applied Control:'
 #    alpha_current = 2.0 * tanh( 2*(S._ts - Tf*0.5 ) );    
-    alpha_current =  (4.0) * (S._ts /S.Tf_optimization) - 2.0    
+    alpha_current =  (4.0) * (S._ts /S.Tf_optimization) - 2.0
+#    alpha_current =  zeros_like(S._ts) + alpha_bounds[1]*(S._ts>S.Tf_optimization)    
     alpha_current[where(alpha_current>alpha_bounds[1])] = alpha_bounds[1];
     
 #    alpha_max = alpha_bounds[1];
@@ -962,7 +875,7 @@ def SingleSolveHarness(tau_chars, tau_char_weights, mu_sigma,
     'Make Simple Increment:'
     alpha_next = deepcopy(alpha_current);
     ids=S.getOptTs_indices();
-    alpha_next[ids] = alpha_current[ids] + 50*grad_H[ids];
+    alpha_next[ids] = alpha_current[ids] + 10*grad_H[ids];
 
     'SOLVE incremented Objective:'
     fs_post, J_next = S.solveObjectiveOnly(tau_chars, tau_char_weights, mu_sigma, alpha_next);
@@ -1015,11 +928,11 @@ def SingleSolveHarness(tau_chars, tau_char_weights, mu_sigma,
     vlines(S.Tf_optimization, ylim()[0], ylim()[1], linestyles='dashed');    
     
     subplot(212);hold(True);
-    plot(S.getOptTs(), grad_H); 
+    plot(S._ts, grad_H); 
     vlines(S.Tf_optimization, ylim()[0], ylim()[1], linestyles='dashed');
     title('Gradient over optimization interval')
     
-        
+    ''    
     
     
 
@@ -1222,7 +1135,7 @@ def ForwardSolveBox(tau_chars,
 if __name__ == '__main__':
     from pylab import *
 
-    mu_sigma = [0., 1.] 
+    mu_sigma = [0.5, 1.5] 
     
     tau_chars = linspace(0.25, 4, 2);
     tau_chars = linspace(0.5, 2,  2);
@@ -1230,22 +1143,25 @@ if __name__ == '__main__':
     
     alpha_bounds = (-2., 2.);
       
-    Tf =  15;
-    
+    Tf =  15.0;
+    Tfopt=10.0;
     '''This shows how to solve just the forward equation without the whole opt-control solve''' 
 #    ForwardSolveBox(tau_chars, mu_sigma, Tf)
 
     
     '''move the main PDE-solves to C:'''
-    PyVsCDriver(tau_chars, mu_sigma, 3.0);
+#    PyVsCDriver(tau_chars, mu_sigma, 3.0);
     
     'Explore Solver <something>???'
 #    CVsCDriver()
 
+
     'Solve a Single Iteration of the Forward-Adjoint System'
-#    for tau_chars in [ linspace(0.25, 4, 2), linspace(0.5, 2,  2)]:
-#        tau_char_weights = ones_like(tau_chars) / len(tau_chars)
-#        SingleSolveHarness(tau_chars, tau_char_weights, mu_sigma, Tf=Tf)  
+    tau_chars_list =  [ linspace(0.25, 4, 2), linspace(0.5, 2,  2)]
+    for tau_chars in tau_chars_list[0:1]:
+        tau_char_weights = ones_like(tau_chars) / len(tau_chars);
+        SingleSolveHarness(tau_chars, tau_char_weights, mu_sigma, Tf=Tf, Tfopt=Tfopt);  
+        print('-'*16)
     
     
     show()

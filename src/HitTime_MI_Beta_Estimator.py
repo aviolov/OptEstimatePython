@@ -47,6 +47,7 @@ class SimulationParams():
         self.tau_char = tau_char;
         self.sigma = sigma; 
 #        %TODO make self.beta = a computed property 
+
     def printme(self):
         print 'SimPs: m,t,s = %g, %g %g' %( self.mu, self.tau_char, self.sigma )
     
