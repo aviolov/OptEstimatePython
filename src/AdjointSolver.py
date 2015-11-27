@@ -20,6 +20,7 @@ import ext_fpc
 from HitTime_MI_Beta_Estimator import SimulationParams
 #from PathSimulator import ABCD_LABEL_SIZE
 from TauParticleEnsemble import TauParticleEnsemble
+from scipy.interpolate.interpolate import interp1d
 
 RESULTS_DIR = '/home/alex/Workspaces/Python/OptEstimate/Results/FP_Adjoint/'
 FIGS_DIR    = '/home/alex/Workspaces/Latex/OptEstimate/Figs/FP_Adjoint'
@@ -65,9 +66,18 @@ class FPAdjointSolver():
         self.setTfOpt(Tf_optimization);
 
     #Grid management routines:    
+    def refine(self, dx_factor, dt_factor):
+        'dx_factor<1, dt_factor<1'
+        x_min = self._xs[0];
+        x_thresh = self._xs[-1];
+        Tf = self._ts[-1];
+        self._xs, self._dx = self._space_discretize(self._dx*dx_factor, x_min, x_thresh);
+        self._ts, self._dt = self._time_discretize(Tf,self._dt*dt_factor);
+    
     def rediscretize(self, dx, dt, Tf, x_min, x_thresh = 1.0):
         self._xs, self._dx = self._space_discretize(dx, x_min, x_thresh)
         self._ts, self._dt = self._time_discretize(Tf,dt)
+        print 'nodes count = %.2g GB per forward-backward solution'%(len(self._xs)*len(self._ts)*8*2*1e-9)
     
     def _space_discretize(self, dx, x_min, x_thresh = 1.0):
         xs = arange(x_thresh, x_min - dx, -dx)[-1::-1];
@@ -185,6 +195,7 @@ class FPAdjointSolver():
     def solve_hittime_distn_per_parameter(self, tau_char,
                                           mu_sigma,
                                           alphas,
+                                          force_positive=False,
                                           visualize=False):
         'Forward Distn'
         fs = squeeze( self._fsolve( [tau_char], [1.0],
@@ -195,7 +206,9 @@ class FPAdjointSolver():
        
         if visualize:
             figure(); plot(self._ts, gs); title('HItting Time distn'); xlabel('t'); ylabel('t');
-            
+        
+        if force_positive:
+            gs[gs<=0] = 1e-8;
         return gs;
     
     def hittime_distn_via_flow(self, sigma, fs):
@@ -203,6 +216,7 @@ class FPAdjointSolver():
         D = sigma*sigma / 2.0;
         'g is the outflow at the upper boundary:'
         return D*(fs[-2,:] - fs[-1,:])/self._dx;
+    
     def hittime_distn_via_conservation(self, fs):
         Ntaus = fs.shape[0];
         return r_[0, -diff(sum(fs, axis=0))*self._dx/self._dt];        
@@ -885,12 +899,12 @@ def SingleSolveHarness(tau_chars, tau_char_weights, mu_sigma,
     
     'Hitting Time Density:'    
     D = mu_sigma[1]**2/2;  
-    lfs = squeeze(fs[-1,:,:]);
+    lfs = squeeze(fs_post[0,:,:]);
     gs_flow = S.hittime_distn_via_flow(mu_sigma[1], lfs)
     gs_conservation = S.hittime_distn_via_conservation(lfs);       
     survivor_function = sum(lfs, axis=0)*S._dx
-    lower_flow = D*(lfs[ 1,:] - lfs[ 0,:])/S._dx  + \
-                (S._xs[0]/tau_chars[0] - alpha_current)*lfs[0,:];
+    lower_flow = D*(lfs[ 1,:] - lfs[0,:])/S._dx  + \
+                ((S._xs[0] - mu_sigma[0])/tau_chars[0] - alpha_next)*lfs[0,:];
 
     print 'gs_flow= : %.4f'%(sum(gs_flow*S._dt));
     print 'gs_conservation= : %.4f'%(sum(gs_conservation*S._dt));
@@ -920,19 +934,58 @@ def SingleSolveHarness(tau_chars, tau_char_weights, mu_sigma,
     
     
     'Visualize Control Evolution:'
-    figure()
-    subplot(211);hold(True);
-    plot(S._ts, alpha_current, 'b', label='pre'); title('Control'); 
-    plot(S._ts, alpha_next, 'r', label='post');
-    legend(); 
-    vlines(S.Tf_optimization, ylim()[0], ylim()[1], linestyles='dashed');    
+    cfig = figure(figsize=(17,12));subplots_adjust(hspace = 0.6, left=0.15, right=0.975 )
     
-    subplot(212);hold(True);
+    'Controls Subplot:'
+    ax1 = subplot(211);hold(True);
+    plot(S._ts, alpha_current, 'b--', label='pre-increment'); 
+    plot(S._ts, alpha_next, 'r', label='post-incrment');
+    legend( prop={'size':label_font_size} ); 
+    ylabel(r'$\alpha(t)$', fontsize = xlabel_font_size);
+    vlines(S.Tf_optimization, ylim()[0], ylim()[1], linestyles='dashed');    
+    title('Control Increment', fontsize = xlabel_font_size)
+    
+    sub_sample = 100
+    for t, ap, an in zip(S._ts[50::sub_sample],
+                         alpha_current[50::sub_sample],
+                         alpha_next[50::sub_sample]):
+        if abs(an-ap)>2e-1:
+            annotate('', xy=(t, ap), xycoords='data',
+                     xytext=(t, an), textcoords='data',
+                     arrowprops={'arrowstyle': '<-'})
+        
+    
+    ticks = [alpha_bounds[0], 0 ,alpha_bounds[1] ];
+    ax1.set_yticks(ticks) 
+    ax1.set_yticklabels(('$%.1f$'%alpha_bounds[0], '$0$','$%.1f$'%alpha_bounds[1]),
+                         fontsize = label_font_size) 
+    for t in ax1.get_xticklabels():
+        t.set_visible(False) 
+        
+    'Gradient Sub-Plot:'
+    ax2 = subplot(212);hold(True);
     plot(S._ts, grad_H); 
     vlines(S.Tf_optimization, ylim()[0], ylim()[1], linestyles='dashed');
-    title('Gradient over optimization interval')
+    ylabel(r'$\nabla_\alpha I$', fontsize = xlabel_font_size);
+    xlabel(r'$t$', fontsize = xlabel_font_size)
+    title('Objective Gradient', fontsize = xlabel_font_size)
+ 
+    time_ticks = [0. , Tfopt  ,S._ts[-1] ];    
+    xtick_labels = ['$%.1f$'%x for x in time_ticks];
+    xtick_labels[1] = '$t_{opt}$';
+    ax2.set_xticks(time_ticks)
+    ax2.set_xticklabels(xtick_labels); 
     
-    ''    
+    ticks = [-.1, 0, .1];
+    ax2.set_yticks(ticks) 
+    ax2.set_yticklabels(['$%.1f$'%tick for tick in ticks],
+                         fontsize = label_font_size) 
+    
+    
+    'save fig:'
+    lfig_name = os.path.join(FIGS_DIR, 'control_increment_example.pdf');
+    print 'saving to ', lfig_name
+    cfig.savefig(lfig_name)
     
     
 
@@ -1107,33 +1160,75 @@ def CVsCDriver():
 #    plot(S._ts, G2, label='C2');
 #    legend(); 
      
-def ForwardSolveBox(tau_chars,
-                     mu_sigma, 
-                     Tf):
-#    fbkSoln = FBKSolution.load(mu_beta_Tf_Ntaus = mu_sigma + [Tf] + [len(tau_chars)])
+def ForwardSolveBox( ):
+    Tf = 16;
 
+    mts_init = [0.5,log(.5), log(1.)];
+                      
+    alphaF = lambda t : 2*tanh( (t-Tf/2))
+    mts_est = [0.13837874  ,0.29010642,  0.7];
+    cols = ['g', 'r', 'b'];
+        
+    mts_init[1] = exp(mts_init[1]);
+    mts_init[2] = exp(mts_init[2]);
+    mts_true = [.0, 1., 1.];
+        
+    dist_fig = figure(figsize=(17,10))
+    for pdx, (param_tag,mts) in enumerate(zip(['init', 'final', 'true'],
+                                              [mts_init, mts_est, mts_true])):
+#    for pdx, (param_tag,mts) in enumerate(zip(['final'], [mts_true])):
+#        print param_tag, ':', mts
+        
+        
+        tau = mts[1]; mu_sigma =  [mts[0], mts[2]];
+        lSolver =  generateDefaultAdjointSolver(tau, mu_sigma,  Tf=Tf);
+        lSolver.refine(0.01, 0.5);
+        
+        alphas_for_f = alphaF(lSolver._ts);
+        
+        'Compute hitting time density:'
+        gs = lSolver.solve_hittime_distn_per_parameter(tau,
+                                                       mu_sigma,
+                                                       alphas_for_f)
+        
+        lfs = squeeze( lSolver._fsolve( [tau], [1.0],
+                                        mu_sigma, alphas_for_f,
+                                        visualize=True));
+#        
+        gs_conservation = lSolver.hittime_distn_via_conservation(lfs);
+        
+        gs_flow = lSolver.hittime_distn_via_flow(mu_sigma[1], lfs)
 
-    lS = fbkSoln._Solver; 
-    
-    lS.setTf(2*Tf);
-    
-    alphas = fbkSoln._cs_iterates[-1];
-    alpha_bounds= fbkSoln._alpha_bounds;
-    
-    alpha_extra = 0*alpha_bounds[1]*ones_like(lS._ts);
-    
-    alpha_extra[0:len(alphas)] = alphas;
-    
-    for tau_char in tau_chars:
-        gs = lS.solve_hittime_distn_per_parameter(tau_char,
-                                                   mu_sigma,
-                                                   alpha_extra,
-                                                   visualize=False);
-        print sum(gs)*lS._dt;                                       
+                    
+        g_integral = sum(gs)*lSolver._dt;                         
+        print 'flow-integral = %.3f, conservation-integral=%.3f'%(g_integral,
+                                                                  sum(gs_conservation)*lSolver._dt);
+        
+        print 'flow- -ve integral = %.3f, conservation -ve integral=%.3f'%(sum(gs[gs<0])*lSolver._dt,
+                                                                           sum(gs_conservation[gs_conservation<0])*lSolver._dt);
+                                                                           
+        figure(dist_fig.number);
+        subplot(211); hold(True); 
+        plot(lSolver._ts, gs/g_integral, cols[pdx]+'--', linewidth=2)
+         
+        subplot(212); hold(True); 
+        plot(lSolver._ts, gs_flow, cols[pdx]+'--', linewidth=2, label=param_tag+ ' flow') 
+        plot(lSolver._ts, gs_conservation, cols[pdx]+'+-', linewidth=2, label=param_tag + ' conserv')
+        
+        del lSolver
+            
+    legend()                                    
                                                    
 
 if __name__ == '__main__':
     from pylab import *
+#    rcParams.update({'legend.fontsize': label_font_size,                     
+#                     'axes.linewidth' : 2.0,
+#                     'axes.titlesize' : xlabel_font_size ,  # fontsize of the axes title
+#                     'axes.labelsize'  : xlabel_font_size,  
+#                     'xtick.labelsize'      : label_font_size,
+#                     'ytick.labelsize'      : label_font_size});
+    
 
     mu_sigma = [0.5, 1.5] 
     
@@ -1145,8 +1240,9 @@ if __name__ == '__main__':
       
     Tf =  15.0;
     Tfopt=10.0;
+    
     '''This shows how to solve just the forward equation without the whole opt-control solve''' 
-#    ForwardSolveBox(tau_chars, mu_sigma, Tf)
+    ForwardSolveBox()
 
     
     '''move the main PDE-solves to C:'''
@@ -1157,12 +1253,11 @@ if __name__ == '__main__':
 
 
     'Solve a Single Iteration of the Forward-Adjoint System'
-    tau_chars_list =  [ linspace(0.25, 4, 2), linspace(0.5, 2,  2)]
-    for tau_chars in tau_chars_list[0:1]:
-        tau_char_weights = ones_like(tau_chars) / len(tau_chars);
-        SingleSolveHarness(tau_chars, tau_char_weights, mu_sigma, Tf=Tf, Tfopt=Tfopt);  
-        print('-'*16)
-    
+#    tau_chars_list =  [ linspace(0.25, 4, 2), linspace(0.5, 2,  2)]
+#    for tau_chars in tau_chars_list[0:1]:
+#        tau_char_weights = ones_like(tau_chars) / len(tau_chars);
+#        SingleSolveHarness(tau_chars, tau_char_weights, mu_sigma, Tf=Tf, Tfopt=Tfopt);  
+#        print('-'*16)    
     
     show()
     

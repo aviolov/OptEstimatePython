@@ -991,14 +991,20 @@ def postAnalysis(Nblocks, Nhits, simPs,
     '''LATEXIFY:'''
     print 'latexifying:'
     
-    latex_string = r'control type & mean($ \hat\tau  $ ) & std($ \hat\tau $) \\ \hline '
+    latex_string = r'control type & mean($\hat\tau$) & std($\hat\tau$) \\ \hline '
     
     for adx,   c_tag,  in zip( range(Nalphas),
                                     ctags):
         bs = betaEsts[adx,:]; 
         taus = 1.0/bs;
 #        log_taus = log(taus)
-        latex_string+= r'%s & %.3f & %.2f \\' %(c_tag, mean(taus ), std(taus ) )
+        latex_string+= r'%s & %.3f & ' %(c_tag, mean(taus))
+        if len(taus)>1:
+            latex_string+='%.2f'% std(taus ) 
+        else:
+            latex_string+='-'
+            
+        latex_string+=r' \\'
         
     print latex_string
         
@@ -1078,13 +1084,11 @@ def investigateSingleBlockEstimation(Nblocks, Nhits, simPs,
     plot(lSolver._ts, gBad, 'r-', label='Distribution using Poorly estimated tau',linewidth=3)
     plot(lSolver._ts, gTrue, 'g-', label='True Distribution',linewidth=3)
     
-    
     lfig_name = os.path.join(FIGS_DIR,
                                 'Adjoint_TauChar_Estimator_good_vs_bad_estimates_Nh%d.pdf'%(Nhits))
                                    
     print 'saving to ', lfig_name
     savefig(lfig_name,dpi=300)    
-    
     
     
     
@@ -1232,23 +1236,23 @@ if __name__ == '__main__':
 #    estimatorWorkbench(simPs, fbkSoln)  
   
 
-#    '''BATCH Parameter Estimation:''' 
-##    for Nh in array( [1e5] ).astype(int) :
-#    for Nh in array( [ 1e2  , 1e3, 1e4, 1e5 ]).astype(int): 
-##    for Nh in array( [1e2, 1e3 ]).astype(int): 
-#        Nb = N_all_hits // Nh;
-#        'Estimate tau_char:'       
-#        estimateHarness(simPs, 
-#                        FBKSolution.load('BatchEstimate_wide-prior'),
-#                        Nblocks = Nb, 
-#                        Nhits = Nh,
-#                        reestimate=False) 
+    '''BATCH Parameter Estimation:''' 
+#    for Nh in array( [1e5] ).astype(int) :
+    for Nh in array( [ 1e2  , 1e3, 1e4, 1e5 ]).astype(int): 
+#    for Nh in array( [1e2, 1e3 ]).astype(int): 
+        Nb = N_all_hits // Nh;
+        'Estimate tau_char:'       
+        estimateHarness(simPs, 
+                        FBKSolution.load('BatchEstimate_wide-prior'),
+                        Nblocks = Nb, 
+                        Nhits = Nh,
+                        reestimate=False) 
          
 
     'Investigate when the estimation goes horribly wrong and when it goes really good'
-    for Nh in [1e3, 1e4]:
-        investigateSingleBlockEstimation(Nblocks = N_all_hits//Nh,   Nhits = Nh, simPs=simPs, 
-                                          fbkSoln = FBKSolution.load('BatchEstimate_wide-prior'))
+#    for Nh in [1e3, 1e4]:
+#        investigateSingleBlockEstimation(Nblocks = N_all_hits//Nh,   Nhits = Nh, simPs=simPs, 
+#                                          fbkSoln = FBKSolution.load('BatchEstimate_wide-prior'))
     
     
     '''The sweep through beta /sigma'''

@@ -576,7 +576,7 @@ if __name__ == '__main__':
     simPs   = SimulationParams(tau_char = 1.)
     
         
-    visualizeControls(Tf = 16, fig_name='Fb_vs_det_control_illustrate');
+#    visualizeControls(Tf = 16, fig_name='Fb_vs_det_control_illustrate');
 
     '''Simulate N passage times'''
 #    GeneratePathsHarness(Nblocks = Nblocks, 

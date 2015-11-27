@@ -890,18 +890,18 @@ def KnownParametersBox( Tf=12,Tfopt=8,
     tau_chars  = linspace(0.5, 2.0, Ntaus)
     tau_char_weights = ones_like(tau_chars)/len(tau_chars); 
     
-    mu_sigma_list = [(-.5, 1), (0.1,1), (1,1),
-                     (0,  .3), (0, 0.9), (0,1.5) ]
-                       
-    param_tags = ['munegative', 'musmallperturb', 'muthresh',
-                  'lownoise', 'sigmasmallperturb', 'highnoise']  
-    
-   
+    paramsDict = {'munegative': (-0.5, 1),
+                  'musmallperturb':(0.1,1),
+                  'muthresh': (1,1),
+                  'lownoise': (0,  0.3),
+                  'sigmasmallperturb': (0, 0.9), 
+                  'highnoise': (0,1.5) }
+           
+    paramsDict = {k: paramsDict[k] for k in ['lownoise',]};
+       
     'MAIN LOOP:'
     resultsDict = {};
-    for tdx, (mu_sigma, param_tag) in enumerate(zip(mu_sigma_list, 
-                                                     param_tags)):
-        
+    for tdx, (param_tag,mu_sigma) in enumerate( paramsDict.iteritems()):
         print tdx,':', param_tag, '\t', mu_sigma[0], mu_sigma[-1]
         soln_tag = param_tag;
         init_ts = linspace(0, Tf, 100);
@@ -1001,8 +1001,8 @@ if __name__ == '__main__':
    
     '''Is there a difference between the number of taus (shape of the prior, >2 moments)
     Conclusion: No significant difference'''
-    NtausBox(mu_sigma, Tf, alpha_bounds=alpha_bounds,
-             resimulate=True);
+#    NtausBox(mu_sigma, Tf, alpha_bounds=alpha_bounds,
+#             resimulate=True);
              
 
     '''Is there a difference between a wide spread prior vs.
@@ -1017,7 +1017,10 @@ if __name__ == '__main__':
 
 
     '''Check effect of varying mu, sigma'''
-#    KnownParametersBox(resimulate=True)
+    KnownParametersBox(resimulate=True)
+
+    
+        
 
 
     show();

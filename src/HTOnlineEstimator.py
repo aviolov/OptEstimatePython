@@ -696,7 +696,8 @@ def driverBatchEstimate(resimulate = False,
                           Ntrials = 500,
                            simPs = SimulationParams(),
                            save_base_name = 'single_experiment',
-                           multi_process_flag=True):
+                           multi_process_flag=True,
+                           restart_experiment_idx=0):
     
     'Main Computational Function:'
     def singleExperimentProcess(experiment_idx, procLock):
@@ -730,7 +731,7 @@ def driverBatchEstimate(resimulate = False,
             Nprocs_at_a_time = 4
             procs  = [];
             procLock = Lock();
-            for experiment_idx in xrange(Nexperiments):
+            for experiment_idx in xrange(restart_experiment_idx,Nexperiments):
                 'Add to Queue:'
                 procs.append(Process(target=singleExperimentProcess,
                                      args=(experiment_idx, procLock)) );
@@ -977,12 +978,13 @@ if __name__ == '__main__':
 #    driverMIOptimization();
 
     ''' batch a bunch of experiments '''
-    Nt = 32; Ne=8; Nobs=2;
-    driverBatchEstimate(resimulate=True,Ntaus=Nt, Nexperiments=Ne, Ntrials=Nobs,
-                        multi_process_flag=True)
+    Nt = 32; Ne=50; Nobs=500;
+#    driverBatchEstimate(resimulate=True,Ntaus=Nt, Nexperiments=Ne, Ntrials=Nobs,
+#                        multi_process_flag=True)
     
     ''' visualize aggregated belief'''
-    visualizeAggregatedBatch(fig_name=None, Ntaus=Nt, Nexperiments=Ne, Nobs=Nobs)
+    visualizeAggregatedBatch(Ntaus=Nt, Nexperiments=Ne, Nobs=Nobs)
+
 
     ''' narrow prior estimate'''
 #    driverNarrowExperiment()
